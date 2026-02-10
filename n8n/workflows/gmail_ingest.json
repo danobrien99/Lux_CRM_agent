@@ -1,0 +1,81 @@
+{
+  "name": "gmail_ingest",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {}
+      },
+      "id": "gmail_trigger",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1,
+      "position": [220, 260]
+    },
+    {
+      "parameters": {
+        "functionCode": "return items.map((item) => ({ json: { source_system: 'gmail', event_type: item.json.labelIds?.includes('SENT') ? 'email_sent' : 'email_received', external_id: item.json.id, timestamp: item.json.internalDate ? new Date(Number(item.json.internalDate)).toISOString() : new Date().toISOString(), thread_id: item.json.threadId, direction: item.json.labelIds?.includes('SENT') ? 'out' : 'in', subject: item.json.subject || '', participants: { from: [{ email: item.json.from || '' }], to: [], cc: [] }, body_plain: item.json.textPlain || '' } }));"
+      },
+      "id": "map_interaction",
+      "name": "Map Interaction Event",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [480, 260]
+    },
+    {
+      "parameters": {
+        "url": "http://api:8000/v1/ingest/interaction_event",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{$env.N8N_WEBHOOK_SECRET}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json}}"
+      },
+      "id": "post_ingest",
+      "name": "POST Interaction",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [760, 260]
+    }
+  ],
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Map Interaction Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Interaction Event": {
+      "main": [
+        [
+          {
+            "node": "POST Interaction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

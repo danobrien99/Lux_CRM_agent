@@ -1,0 +1,18 @@
+# Lux CRM Agent Instructions (Template)
+
+Use this file as the primary implementation contract for the CRM agent.
+
+## Core requirements
+- FastAPI backend for ingestion, scoring, drafting, and resolution APIs
+- Neo4j Aura for context graph
+- Neon Postgres + pgvector for interaction chunks and embeddings
+- n8n workflows for ingestion triggers and scheduled jobs
+- Next.js UI for priority list, contact detail, news matching, drafts, and resolution
+
+## Non-negotiables
+- Every claim must have provenance pointers to evidence
+- Sensitive facts are excluded from drafts by default
+- Contradictions must create resolution tasks
+
+## Reference
+Copy full module contracts and schemas from `AGENT.md`.

@@ -1,0 +1,71 @@
+{
+  "name": "transcript_ingest",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "transcript-ingest"
+      },
+      "id": "webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 280]
+    },
+    {
+      "parameters": {
+        "functionCode": "return items.map((item) => ({ json: { source_system: 'transcript', event_type: 'meeting_transcript', external_id: item.json.external_id || `${Date.now()}`, timestamp: item.json.timestamp || new Date().toISOString(), thread_id: item.json.thread_id || null, direction: 'na', subject: item.json.subject || 'Meeting Transcript', participants: item.json.participants || { from: [], to: [], cc: [] }, body_plain: item.json.body_plain || '' } }));"
+      },
+      "id": "map",
+      "name": "Map Transcript",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [500, 280]
+    },
+    {
+      "parameters": {
+        "url": "http://api:8000/v1/ingest/interaction_event",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{$env.N8N_WEBHOOK_SECRET}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json}}"
+      },
+      "id": "post",
+      "name": "POST Transcript",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [760, 280]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Map Transcript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Transcript": {
+      "main": [
+        [
+          {
+            "node": "POST Transcript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
