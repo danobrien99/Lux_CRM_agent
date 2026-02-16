@@ -3,26 +3,29 @@
   "nodes": [
     {
       "parameters": {
-        "path": "transcript-ingest"
+        "httpMethod": "POST",
+        "path": "transcript-ingest",
+        "responseMode": "onReceived"
       },
       "id": "webhook",
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [220, 280]
+      "position": [220, 300]
     },
     {
       "parameters": {
-        "functionCode": "return items.map((item) => ({ json: { source_system: 'transcript', event_type: 'meeting_transcript', external_id: item.json.external_id || `${Date.now()}`, timestamp: item.json.timestamp || new Date().toISOString(), thread_id: item.json.thread_id || null, direction: 'na', subject: item.json.subject || 'Meeting Transcript', participants: item.json.participants || { from: [], to: [], cc: [] }, body_plain: item.json.body_plain || '' } }));"
+        "jsCode": "const toParticipants = (participants) => { const source = participants && typeof participants === 'object' ? participants : {}; const normalize = (entries) => (Array.isArray(entries) ? entries : []).map((entry) => { if (typeof entry === 'string') return { email: entry.toLowerCase() }; if (!entry || typeof entry !== 'object' || !entry.email) return null; const email = String(entry.email).toLowerCase(); const name = entry.name ? String(entry.name) : undefined; return name ? { email, name } : { email }; }).filter(Boolean); return { from: normalize(source.from ?? source.from_), to: normalize(source.to), cc: normalize(source.cc) }; }; return items.map((item, idx) => { const payload = item.json ?? {}; return { json: { source_system: 'transcript', event_type: 'meeting_transcript', external_id: String(payload.external_id || `transcript-${Date.now()}-${idx}`), timestamp: payload.timestamp || new Date().toISOString(), thread_id: payload.thread_id ? String(payload.thread_id) : null, direction: 'na', subject: payload.subject || 'Meeting Transcript', participants: toParticipants(payload.participants), body_plain: String(payload.body_plain || payload.text || ''), attachments: Array.isArray(payload.attachments) ? payload.attachments : [] } }; });"
       },
       "id": "map",
       "name": "Map Transcript",
-      "type": "n8n-nodes-base.function",
+      "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [500, 280]
+      "position": [500, 300]
     },
     {
       "parameters": {
+        "method": "POST",
         "url": "http://api:8000/v1/ingest/interaction_event",
         "sendHeaders": true,
         "headerParameters": {
@@ -35,13 +38,38 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{$json}}"
+        "jsonBody": "={{$json}}",
+        "options": {}
       },
       "id": "post",
       "name": "POST Transcript",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [760, 280]
+      "position": [780, 300],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.filter((item) => !item.json?.error);"
+      },
+      "id": "success_only",
+      "name": "Success Only",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1060, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.filter((item) => Boolean(item.json?.error)).map((item) => ({ json: { workflow: 'transcript_ingest', failed_at: new Date().toISOString(), endpoint: 'http://api:8000/v1/ingest/interaction_event', error: item.json.error, response_payload: item.json } }));"
+      },
+      "id": "dead_letter_payload",
+      "name": "Dead Letter Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1060, 380]
     }
   ],
   "connections": {
@@ -66,6 +94,25 @@
           }
         ]
       ]
+    },
+    "POST Transcript": {
+      "main": [
+        [
+          {
+            "node": "Success Only",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Dead Letter Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
+  },
+  "settings": {
+    "executionOrder": "v1"
   }
 }

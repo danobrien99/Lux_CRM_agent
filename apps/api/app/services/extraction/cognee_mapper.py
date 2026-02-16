@@ -10,11 +10,17 @@ def candidates_to_claims(candidates: dict[str, Any]) -> list[dict[str, Any]]:
     claims: list[dict[str, Any]] = []
     for rel in candidates.get("relations", []):
         claim_type = "employment" if rel.get("predicate") == "employment_change" else "topic"
+        predicate = str(rel.get("predicate") or "").strip()
         claims.append(
             {
                 "claim_id": str(uuid.uuid4()),
                 "claim_type": claim_type,
-                "value_json": {"subject": rel.get("subject"), "object": rel.get("object")},
+                "value_json": {
+                    "subject": rel.get("subject"),
+                    "predicate": predicate or "related_to",
+                    "object": rel.get("object"),
+                    "evidence_spans": list(rel.get("evidence_spans", [])),
+                },
                 "status": "proposed",
                 "sensitive": False,
                 "valid_from": None,

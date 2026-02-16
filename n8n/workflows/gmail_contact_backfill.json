@@ -1,0 +1,249 @@
+{
+  "name": "gmail_contact_backfill",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        220,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "read",
+        "sheetId": "1_126A0A6-yX6n5sQYmsH_Jbk900yzjDaUy4jyX_aWT0",
+        "range": "Contacts!A:Z",
+        "dataStartRow": 2,
+        "keyRow": 1,
+        "options": {
+          "continue": true,
+          "valueRenderMode": "UNFORMATTED_VALUE"
+        }
+      },
+      "id": "read_contacts_sheet",
+      "name": "Read Contacts Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 2,
+      "position": [
+        500,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const YEARS_BACK = Math.max(1, Number($env.BACKFILL_YEARS_BACK || 2)); // How many years of history to backfill\nconst WINDOW_SIZE_MONTHS = Math.max(1, Number($env.BACKFILL_WINDOW_SIZE_MONTHS || 12)); // Query one window at a time\nconst MAX_CONTACTS_PER_RUN = Math.max(0, Number($env.BACKFILL_MAX_CONTACTS_PER_RUN || 0)); // 0 = all contacts\nconst BACKFILL_CONTACT_MODE_RAW = String($env.BACKFILL_CONTACT_MODE || 'skip_previously_processed').trim().toLowerCase();\nconst BACKFILL_CONTACT_MODE = BACKFILL_CONTACT_MODE_RAW === 'reprocess_all' ? 'reprocess_all' : 'skip_previously_processed';\n\nconst readField = (source, keys) => {\n  for (const key of keys) {\n    const value = source[key];\n    if (value !== undefined && value !== null && String(value).trim() !== '') return value;\n  }\n  return '';\n};\n\nconst toIsoDate = (value) => {\n  const year = value.getUTCFullYear();\n  const month = String(value.getUTCMonth() + 1).padStart(2, '0');\n  const day = String(value.getUTCDate()).padStart(2, '0');\n  return `${year}/${month}/${day}`;\n};\n\nconst unique = new Map();\nfor (const item of items) {\n  const source = item.json ?? {};\n  const email = String(readField(source, ['primary_email', 'primaryEmail', 'Primary Email', 'Email']))\n    .trim()\n    .toLowerCase();\n  if (!email || unique.has(email)) continue;\n\n  const contactId = String(readField(source, ['contact_id', 'contactId', 'Contact ID', 'ContactId'])).trim();\n  unique.set(email, { contact_id: contactId || null, primary_email: email });\n}\n\nconst contacts = Array.from(unique.values());\nif (contacts.length === 0) {\n  throw new Error('No contact emails found in sheet. Expected primary_email (or Email) column.');\n}\n\nconst limitedContacts = MAX_CONTACTS_PER_RUN > 0 ? contacts.slice(0, MAX_CONTACTS_PER_RUN) : contacts;\n\nlet processedContactIds = new Set();\nlet processedPrimaryEmails = new Set();\nif (BACKFILL_CONTACT_MODE === 'skip_previously_processed') {\n  const apiBaseUrl = String($env.BACKFILL_API_BASE_URL || 'http://api:8000').replace(/\\/+$/, '');\n  const statusUrl = `${apiBaseUrl}/v1/admin/backfill_contact_status`;\n  const headers = {};\n  if ($env.N8N_WEBHOOK_SECRET) {\n    headers['X-Webhook-Secret'] = $env.N8N_WEBHOOK_SECRET;\n  }\n\n  const response = await fetch(statusUrl, { method: 'GET', headers });\n  if (!response.ok) {\n    const errorBody = await response.text();\n    throw new Error(`Failed fetching processed contacts (${response.status}): ${errorBody.slice(0, 240)}`);\n  }\n\n  const payload = await response.json();\n  const ids = Array.isArray(payload?.processed_contact_ids) ? payload.processed_contact_ids : [];\n  const emails = Array.isArray(payload?.processed_primary_emails) ? payload.processed_primary_emails : [];\n\n  processedContactIds = new Set(ids.map((value) => String(value).trim()).filter(Boolean));\n  processedPrimaryEmails = new Set(emails.map((value) => String(value).trim().toLowerCase()).filter(Boolean));\n}\n\nconst selectedContacts = limitedContacts.filter((contact) => {\n  if (BACKFILL_CONTACT_MODE !== 'skip_previously_processed') {\n    return true;\n  }\n  const contactId = String(contact.contact_id || '').trim();\n  if (contactId && processedContactIds.has(contactId)) {\n    return false;\n  }\n  return !processedPrimaryEmails.has(contact.primary_email);\n});\n\nif (selectedContacts.length === 0) {\n  return [];\n}\n\nconst now = new Date();\nconst backfillStart = new Date(Date.UTC(now.getUTCFullYear() - YEARS_BACK, now.getUTCMonth(), now.getUTCDate()));\nconst queue = [];\n\nfor (let index = 0; index < selectedContacts.length; index += 1) {\n  const contact = selectedContacts[index];\n  let cursorEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));\n\n  while (cursorEnd > backfillStart) {\n    let cursorStart = new Date(cursorEnd);\n    cursorStart.setUTCMonth(cursorStart.getUTCMonth() - WINDOW_SIZE_MONTHS);\n    if (cursorStart < backfillStart) {\n      cursorStart = new Date(backfillStart);\n    }\n\n    const after = toIsoDate(cursorStart);\n    const before = toIsoDate(cursorEnd);\n    const query = `(from:${contact.primary_email} OR to:${contact.primary_email} OR cc:${contact.primary_email}) after:${after} before:${before}`;\n\n    queue.push({\n      json: {\n        ...contact,\n        query,\n        window_after: after,\n        window_before: before,\n        contact_index: index + 1,\n        contact_total: selectedContacts.length,\n        backfill_contact_mode: BACKFILL_CONTACT_MODE,\n      },\n    });\n\n    cursorEnd = cursorStart;\n  }\n}\n\nif (queue.length === 0) {\n  throw new Error('Backfill queue is empty. Check YEARS_BACK and contact sheet values.');\n}\n\nreturn queue;"
+      },
+      "id": "build_contact_queue",
+      "name": "Build Contact Queue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "message",
+        "operation": "getAll",
+        "returnAll": true,
+        "simple": true,
+        "filters": {
+          "q": "={{$json.query}}",
+          "readStatus": "both"
+        },
+        "options": {}
+      },
+      "id": "gmail_get_many",
+      "name": "Gmail Get Many",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1020,
+        260
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const seen = new Set(); const deduped = []; for (const item of items) { const msg = item.json ?? {}; const key = String(msg.id || msg.messageId || msg['Message-ID'] || `${msg.threadId || ''}:${msg.date || msg.Date || ''}:${msg.subject || msg.Subject || ''}`); if (!key || key === '::') continue; if (seen.has(key)) continue; seen.add(key); deduped.push({ json: msg }); } return deduped;"
+      },
+      "id": "dedupe_messages",
+      "name": "Dedupe Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1260,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const parseAddressList = (value) => { if (!value) return []; return String(value).split(',').map((chunk) => chunk.trim()).filter(Boolean).map((entry) => { const match = entry.match(/^(.*)<([^>]+)>$/); if (match) { const name = match[1].trim().replace(/(^\"|\"$)/g, '') || undefined; return { email: match[2].trim().toLowerCase(), ...(name ? { name } : {}) }; } return { email: entry.replace(/(^\"|\"$)/g, '').trim().toLowerCase() }; }).filter((participant) => participant.email); }; const readHeader = (email, headerName) => { const direct = email[headerName.toLowerCase()] ?? email[headerName]; if (direct) return direct; const headers = email.payload?.headers ?? email.headers; if (!Array.isArray(headers)) return ''; const found = headers.find((header) => String(header?.name ?? header?.key ?? '').toLowerCase() === headerName.toLowerCase()); return found?.value ?? ''; }; const normalizeLabel = (label) => { if (typeof label === 'string') return label.toUpperCase(); if (label && typeof label === 'object') return String(label.id || label.name || '').toUpperCase(); return ''; }; return items.map((item, idx) => { const email = item.json ?? {}; const labelsRaw = Array.isArray(email.labelIds) ? email.labelIds : Array.isArray(email.labels) ? email.labels : []; const labels = labelsRaw.map(normalizeLabel).filter(Boolean); const isSent = labels.includes('SENT'); const internalDate = email.internalDate ?? email.date ?? email.Date; let timestamp = new Date().toISOString(); if (internalDate) { const asNumber = Number(internalDate); const parsedDate = Number.isFinite(asNumber) && asNumber > 0 ? new Date(asNumber) : new Date(internalDate); if (!Number.isNaN(parsedDate.getTime())) timestamp = parsedDate.toISOString(); } const fromHeader = readHeader(email, 'From') || email.from || ''; const toHeader = readHeader(email, 'To') || email.to || ''; const ccHeader = readHeader(email, 'Cc') || email.cc || ''; const bodyPlain = email.textPlain || email.bodyPlain || email.snippet || email.text || ''; return { json: { source_system: 'gmail', event_type: isSent ? 'email_sent' : 'email_received', external_id: String(email.id || email.messageId || readHeader(email, 'Message-ID') || `gmail-backfill-${Date.now()}-${idx}`), timestamp, thread_id: email.threadId ? String(email.threadId) : null, direction: isSent ? 'out' : 'in', subject: readHeader(email, 'Subject') || email.subject || '(no subject)', participants: { from: parseAddressList(fromHeader), to: parseAddressList(toHeader), cc: parseAddressList(ccHeader) }, body_plain: String(bodyPlain), attachments: Array.isArray(email.attachments) ? email.attachments : [] } }; });"
+      },
+      "id": "map_interaction",
+      "name": "Map Interaction Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://api:8000/v1/ingest/interaction_event",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{$env.N8N_WEBHOOK_SECRET}}"
+            },
+            {
+              "name": "X-Reprocess-Duplicates",
+              "value": "={{String($env.BACKFILL_CONTACT_MODE || '').toLowerCase() === 'reprocess_all' ? 'true' : 'false'}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json}}",
+        "options": {}
+      },
+      "id": "post_ingest",
+      "name": "POST Interaction",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1780,
+        260
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.filter((item) => !item.json?.error);"
+      },
+      "id": "success_only",
+      "name": "Success Only",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2040,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.filter((item) => Boolean(item.json?.error)).map((item) => ({ json: { workflow: 'gmail_contact_backfill', failed_at: new Date().toISOString(), endpoint: 'http://api:8000/v1/ingest/interaction_event', error: item.json.error, response_payload: item.json } }));"
+      },
+      "id": "dead_letter_payload",
+      "name": "Dead Letter Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2040,
+        340
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Contacts Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Contacts Sheet": {
+      "main": [
+        [
+          {
+            "node": "Build Contact Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Contact Queue": {
+      "main": [
+        [
+          {
+            "node": "Gmail Get Many",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Get Many": {
+      "main": [
+        [
+          {
+            "node": "Dedupe Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedupe Messages": {
+      "main": [
+        [
+          {
+            "node": "Map Interaction Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Interaction Event": {
+      "main": [
+        [
+          {
+            "node": "POST Interaction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST Interaction": {
+      "main": [
+        [
+          {
+            "node": "Success Only",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Dead Letter Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

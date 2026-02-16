@@ -2,16 +2,19 @@ from __future__ import annotations
 
 
 def compute_priority_score(relationship_score: float, inactivity_days: int, open_loops: int, trigger_score: float) -> tuple[float, dict]:
-    inactivity = min(35.0, inactivity_days * 1.5)
-    loop_component = min(25.0, open_loops * 5.0)
-    trigger_component = max(0.0, min(20.0, trigger_score))
-    relationship_temp = relationship_score * 0.2
+    relationship_component = max(0.0, min(40.0, relationship_score * 0.4))
+    inactivity_component = 0.0
+    if relationship_score > 0:
+        inactivity_component = max(0.0, min(30.0, (max(inactivity_days, 0) - 7) * 0.35))
 
-    total = max(0.0, min(100.0, inactivity + loop_component + trigger_component + relationship_temp))
+    loop_component = min(20.0, max(open_loops, 0) * 5.0)
+    trigger_component = max(0.0, min(15.0, trigger_score))
+
+    total = max(0.0, min(100.0, relationship_component + inactivity_component + loop_component + trigger_component))
     components = {
-        "inactivity": inactivity,
+        "relationship_component": relationship_component,
+        "inactivity": inactivity_component,
         "open_loops": loop_component,
         "triggers": trigger_component,
-        "relationship_temp": relationship_temp,
     }
     return total, components

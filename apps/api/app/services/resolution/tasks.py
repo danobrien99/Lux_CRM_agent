@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.v1.routes.scores import refresh_cached_interaction_summary
 from app.db.neo4j.queries import get_claim_by_id, set_current_employer, update_claim_status
 from app.db.pg.models import ResolutionTask
+
+logger = logging.getLogger(__name__)
 
 
 def create_resolution_task(
@@ -28,6 +33,34 @@ def create_resolution_task(
     db.commit()
     db.refresh(task)
     return task
+
+
+def create_graph_relation_resolution_task(
+    db: Session,
+    *,
+    contact_id: str,
+    proposed_claim_id: str,
+    payload_json: dict,
+    current_claim_id: str | None = None,
+) -> ResolutionTask:
+    existing = db.scalar(
+        select(ResolutionTask).where(
+            ResolutionTask.contact_id == contact_id,
+            ResolutionTask.proposed_claim_id == proposed_claim_id,
+            ResolutionTask.status == "open",
+        )
+    )
+    if existing:
+        return existing
+
+    return create_resolution_task(
+        db,
+        contact_id=contact_id,
+        task_type="graph_relation_review",
+        proposed_claim_id=proposed_claim_id,
+        current_claim_id=current_claim_id,
+        payload_json=payload_json,
+    )
 
 
 def create_identity_resolution_task(db: Session, *, email: str, payload_json: dict | None = None) -> ResolutionTask:
@@ -139,4 +172,13 @@ def resolve_resolution_task(
     task.payload_json = payload
     db.commit()
     db.refresh(task)
+
+    if task.contact_id:
+        try:
+            refresh_cached_interaction_summary(db, task.contact_id)
+        except Exception:
+            logger.exception(
+                "interaction_summary_cache_refresh_failed_after_resolution",
+                extra={"contact_id": task.contact_id, "task_id": task.task_id},
+            )
     return task

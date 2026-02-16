@@ -13,14 +13,14 @@ Scope: Complete MVP implementation aligned to `AGENT.md` and `.CODEX/PRD.md`, us
 
 ### Step 1.1: Validate baseline runtime
 Implementation checklist
-- [ ] Confirm Docker services are healthy (`api`, `worker`, `redis`, `neo4j`, `n8n`, `ui`).
-- [ ] Confirm `.env` has required local values for Neo4j, Redis, webhook secret, and queue mode.
+- [x] Confirm Docker services are healthy (`api`, `worker`, `redis`, `neo4j`, `n8n`, `ui`).
+- [x] Confirm `.env` has required local values for Neo4j, Redis, webhook secret, and queue mode.
 - [ ] Confirm API responds on `/v1/health`.
 
 Testing checklist
 - [ ] `curl http://localhost:8000/v1/health`
-- [ ] Confirm n8n UI loads at `http://localhost:5679`
-- [ ] Confirm Neo4j Browser loads at `http://localhost:7474`
+- [ ] Confirm n8n UI loads at `http://localhost:5680`
+- [ ] Confirm Neo4j Browser loads at `http://localhost:7476`
 
 Expected behavior gate
 - API health is `status=ok`.
@@ -44,9 +44,10 @@ Expected behavior gate
 
 ### Step 1.3: Wire n8n workflows and webhook security
 Implementation checklist
-- [ ] Import and activate `gmail_ingest.json`, `transcript_ingest.json`, `news_ingest.json`, `sheets_sync.json`, `score_recompute.json`, `data_cleanup.json`.
-- [ ] Ensure every API POST node sends `X-Webhook-Secret` from `N8N_WEBHOOK_SECRET`.
-- [ ] Enable retries and dead-letter handling where absent.
+- [x] Import workflows: `gmail_ingest.json`, `transcript_ingest.json`, `news_ingest.json`, `sheets_sync.json`, `score_recompute.json`, `data_cleanup.json`.
+- [ ] Activate imported workflows after credentials are connected and final smoke tests pass.
+- [x] Ensure every API POST node sends `X-Webhook-Secret` from `N8N_WEBHOOK_SECRET`.
+- [x] Enable retries and dead-letter handling where absent.
 
 Testing checklist
 - [ ] Trigger each workflow manually once.

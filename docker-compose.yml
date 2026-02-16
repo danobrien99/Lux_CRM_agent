@@ -53,6 +53,8 @@ services:
     image: n8nio/n8n:latest
     env_file:
       - .env
+    environment:
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
     ports:
       - "$N8N_PORT:5680"
     volumes:
@@ -61,7 +63,7 @@ services:
   ui:
     image: node:20-alpine
     working_dir: /workspace/apps/ui
-    command: sh -lc "npm install && npm run dev"
+    command: sh -lc "rm -rf .next && npm install && npm run dev"
     env_file:
       - .env
     volumes:
@@ -73,4 +75,6 @@ services:
 
 volumes:
   neo4j_data:
+    name: lux_crm_agent_neo4j_data_isolated
   neo4j_logs:
+    name: lux_crm_agent_neo4j_logs_isolated

@@ -2,6 +2,14 @@
   "name": "data_cleanup",
   "nodes": [
     {
+      "parameters": {},
+      "id": "manual",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [220, 120]
+    },
+    {
       "parameters": {
         "rule": {
           "interval": [
@@ -16,23 +24,69 @@
       "name": "Daily Trigger",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [220, 220]
+      "position": [220, 300]
     },
     {
       "parameters": {
+        "method": "POST",
         "url": "http://api:8000/v1/admin/cleanup",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{$env.N8N_WEBHOOK_SECRET}}"
+            }
+          ]
+        },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={}"
+        "jsonBody": "={}",
+        "options": {}
       },
       "id": "post_cleanup",
       "name": "POST Cleanup",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [520, 220]
+      "position": [520, 220],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.filter((item) => !item.json?.error);"
+      },
+      "id": "success_only",
+      "name": "Success Only",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [760, 140]
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.filter((item) => Boolean(item.json?.error)).map((item) => ({ json: { workflow: 'data_cleanup', failed_at: new Date().toISOString(), endpoint: 'http://api:8000/v1/admin/cleanup', error: item.json.error, response_payload: item.json } }));"
+      },
+      "id": "dead_letter_payload",
+      "name": "Dead Letter Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [760, 300]
     }
   ],
   "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "POST Cleanup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Daily Trigger": {
       "main": [
         [
@@ -43,6 +97,25 @@
           }
         ]
       ]
+    },
+    "POST Cleanup": {
+      "main": [
+        [
+          {
+            "node": "Success Only",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Dead Letter Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
+  },
+  "settings": {
+    "executionOrder": "v1"
   }
 }

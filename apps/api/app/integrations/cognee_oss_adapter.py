@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
+from app.services.prompts import render_prompt
 
 
 def _heuristic(interaction_id: str, text: str) -> dict[str, Any]:
@@ -275,11 +276,10 @@ async def _extract_with_cognee(interaction_id: str, text: str) -> dict[str, Any]
     await _safe_add(cognee_module, ingestion_payload, dataset_name)
     await _safe_cognify(cognee_module, dataset_name)
 
-    query = (
-        "Extract structured entities, relations, and topics from the interaction. "
-        "Return JSON with keys: entities, relations, topics.\n"
-        f"interaction_id={interaction_id}\n"
-        f"text={text}"
+    query = render_prompt(
+        "cognee_extraction_query",
+        interaction_id=interaction_id,
+        interaction_text=text,
     )
     search_results = await _safe_search(
         cognee_module,

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
+from app.services.prompts import render_prompt
 
 
 def _fallback_ops(bundle: dict[str, Any]) -> list[dict[str, Any]]:
@@ -174,11 +175,11 @@ def _compose_messages(bundle: dict[str, Any]) -> list[dict[str, Any]]:
     summary = str(bundle.get("new_interaction_summary", "")).strip()
     candidates = bundle.get("cognee_candidates", [])
     recent_claims = bundle.get("recent_claims", [])
-    content = (
-        "Summarize factual relationship memory updates from this interaction.\n\n"
-        f"Interaction summary:\n{summary}\n\n"
-        f"Candidate claims:\n{json.dumps(candidates, ensure_ascii=True)}\n\n"
-        f"Recent accepted claims:\n{json.dumps(recent_claims, ensure_ascii=True)}"
+    content = render_prompt(
+        "mem0_relationship_updates_user",
+        interaction_summary=summary,
+        candidates_json=json.dumps(candidates, ensure_ascii=True),
+        recent_claims_json=json.dumps(recent_claims, ensure_ascii=True),
     )
     return [{"role": "user", "content": content}]
 

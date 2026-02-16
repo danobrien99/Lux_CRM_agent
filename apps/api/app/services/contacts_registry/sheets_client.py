@@ -31,6 +31,17 @@ def _coerce_bool(value: Any) -> bool:
     return str(value).strip().lower() in _TRUTHY_VALUES
 
 
+def _first_non_empty(payload: dict[str, Any], keys: list[str]) -> str:
+    for key in keys:
+        raw = payload.get(key)
+        if raw is None:
+            continue
+        value = str(raw).strip()
+        if value:
+            return value
+    return ""
+
+
 def _load_service_account_info(raw_value: str) -> dict[str, Any]:
     raw = raw_value.strip()
     if not raw:
@@ -66,18 +77,32 @@ def _parse_rows(values: list[list[str]]) -> list[dict[str, Any]]:
                 continue
             payload[header] = row[idx].strip() if idx < len(row) else ""
 
-        primary_email = str(payload.get("primary_email", "")).strip().lower()
-        contact_id = str(payload.get("contact_id", "")).strip()
+        primary_email = _first_non_empty(payload, ["primary_email", "email"]).lower()
+        contact_id = _first_non_empty(payload, ["contact_id", "contactid", "id"])
         if not primary_email or not contact_id:
             continue
+
+        first_name = _first_non_empty(payload, ["first_name", "firstname"]) or None
+        last_name = _first_non_empty(payload, ["last_name", "lastname"]) or None
+        display_name = _first_non_empty(payload, ["display_name", "full_name", "name"]) or None
+        if not display_name:
+            joined = " ".join(part for part in [first_name, last_name] if part)
+            display_name = joined or None
+
+        company = _first_non_empty(payload, ["company", "organization", "org"]) or None
+        owner_user_id = _first_non_empty(payload, ["owner_user_id", "owner", "owner_user"]) or None
+        notes = _first_non_empty(payload, ["notes", "note"]) or None
 
         rows.append(
             {
                 "contact_id": contact_id,
                 "primary_email": primary_email,
-                "display_name": str(payload.get("display_name", "")).strip() or None,
-                "owner_user_id": str(payload.get("owner_user_id", "")).strip() or None,
-                "notes": str(payload.get("notes", "")).strip() or None,
+                "display_name": display_name,
+                "first_name": first_name,
+                "last_name": last_name,
+                "company": company,
+                "owner_user_id": owner_user_id,
+                "notes": notes,
                 "use_sensitive_in_drafts": _coerce_bool(payload.get("use_sensitive_in_drafts")),
             }
         )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_db, get_settings_dep
@@ -15,12 +15,19 @@ from app.workers.queue import enqueue_job
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 
 
+def _is_truthy_header(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 @router.post("/interaction_event", response_model=IngestResponse)
 def ingest_interaction_event(
     payload: InteractionEventIn,
     db: Session = Depends(get_db),
     settings=Depends(get_settings_dep),
     x_webhook_secret: str | None = Depends(webhook_secret_header),
+    x_reprocess_duplicates: str | None = Header(default=None, alias="X-Reprocess-Duplicates"),
 ) -> IngestResponse:
     verify_webhook_secret(settings, x_webhook_secret)
 
@@ -45,6 +52,9 @@ def ingest_interaction_event(
     if created:
         enqueue_job("process_interaction", interaction.interaction_id)
         status = "enqueued"
+    elif _is_truthy_header(x_reprocess_duplicates):
+        enqueue_job("process_interaction", interaction.interaction_id)
+        status = "requeued"
 
     return IngestResponse(
         raw_event_id=raw_event.id,

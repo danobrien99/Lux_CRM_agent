@@ -52,6 +52,9 @@ class ContactRow(BaseModel):
     contact_id: str
     primary_email: str
     display_name: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    company: str | None = None
     owner_user_id: str | None = None
     notes: str | None = None
     use_sensitive_in_drafts: bool = False
@@ -78,6 +81,8 @@ class ScoreReason(BaseModel):
 class ContactScoreItem(BaseModel):
     contact_id: str
     display_name: str | None = None
+    primary_email: str | None = None
+    company: str | None = None
     relationship_score: float
     priority_score: float
     why_now: str
@@ -89,23 +94,99 @@ class ScoreTodayResponse(BaseModel):
     items: list[ContactScoreItem]
 
 
+class ContactProfile(BaseModel):
+    contact_id: str
+    display_name: str | None = None
+    primary_email: str | None = None
+    owner_user_id: str | None = None
+    company: str | None = None
+
+
+class InteractionSummary(BaseModel):
+    total_interactions: int
+    interaction_count_30d: int
+    interaction_count_90d: int
+    inbound_count: int
+    outbound_count: int
+    last_interaction_at: datetime | None = None
+    last_subject: str | None = None
+    recent_subjects: list[str] = Field(default_factory=list)
+    recent_topics: list[str] = Field(default_factory=list)
+    priority_next_step: str | None = None
+    summary_source: str | None = None
+    priority_next_step_source: str | None = None
+    brief: str
+
+
+class ScoreComponentBreakdown(BaseModel):
+    relationship: dict[str, Any] = Field(default_factory=dict)
+    priority: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScoreTrendPoint(BaseModel):
+    asof: str
+    relationship_score: float
+    priority_score: float
+    components: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ContactScoreDetailResponse(BaseModel):
+    contact_id: str
+    profile: ContactProfile | None = None
+    interaction_summary: InteractionSummary | None = None
+    score_components: ScoreComponentBreakdown | None = None
+    trend: list[ScoreTrendPoint] = Field(default_factory=list)
+    current: ContactScoreItem | None = None
+
+
+class InteractionSummaryRefreshResponse(BaseModel):
+    contact_id: str
+    refreshed: bool
+    interaction_summary: InteractionSummary
+
+
 class DraftRequest(BaseModel):
     contact_id: str
     objective: str | None = None
     allow_sensitive: bool = False
+    overwrite_draft_id: str | None = None
 
 
 class DraftResponse(BaseModel):
     draft_id: str
     contact_id: str
     tone_band: str
+    draft_subject: str
     draft_text: str
     citations_json: list[dict[str, Any]]
     status: str
+    objective: str | None = None
+    retrieval_trace: dict[str, Any] | None = None
+    context_summary: dict[str, Any] | None = None
 
 
 class DraftStatusUpdate(BaseModel):
     status: Literal["proposed", "edited", "approved", "discarded"]
+
+
+class DraftRevisionRequest(BaseModel):
+    draft_subject: str
+    draft_body: str
+    status: Literal["edited", "approved"] = "edited"
+
+
+class DraftStyleGuideUpdateResponse(BaseModel):
+    draft_id: str
+    updated: bool
+    samples_used: int
+    guide_path: str
+    status: str
+
+
+class DraftObjectiveSuggestionResponse(BaseModel):
+    contact_id: str
+    objective: str
+    source_summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class ResolutionTaskItem(BaseModel):
@@ -134,3 +215,11 @@ class ResolveTaskResponse(BaseModel):
 
 class ReprocessRequest(BaseModel):
     interaction_id: str
+
+
+class BackfillContactStatusResponse(BaseModel):
+    asof: datetime
+    total_contact_count: int
+    processed_contact_count: int
+    processed_contact_ids: list[str] = Field(default_factory=list)
+    processed_primary_emails: list[str] = Field(default_factory=list)

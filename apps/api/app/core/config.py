@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     queue_mode: str = "redis"
 
     n8n_webhook_secret: str = ""
+    cors_allow_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
     google_sheets_id: str = ""
     google_sheets_service_account_json: str = ""
@@ -61,6 +62,11 @@ class Settings(BaseSettings):
     data_retention_drafts_days: int = 365
 
     auto_accept_threshold: float = Field(default=0.90, ge=0.0, le=1.0)
+    scoring_use_llm_warmth_depth: bool = False
+    scoring_llm_max_interactions: int = Field(default=8, ge=1, le=25)
+    scoring_llm_snippet_chars: int = Field(default=280, ge=80, le=2000)
+    interaction_summary_cache_enabled: bool = True
+    interaction_summary_cache_ttl_seconds: int = Field(default=21600, ge=60, le=604800)
 
 
 @lru_cache(maxsize=1)

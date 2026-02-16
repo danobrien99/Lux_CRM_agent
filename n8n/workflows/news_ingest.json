@@ -3,16 +3,29 @@
   "nodes": [
     {
       "parameters": {
-        "path": "news-ingest"
+        "httpMethod": "POST",
+        "path": "news-ingest",
+        "responseMode": "onReceived"
       },
       "id": "webhook",
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [220, 260]
+      "position": [220, 300]
     },
     {
       "parameters": {
+        "jsCode": "return items.map((item, idx) => { const payload = item.json ?? {}; const title = payload.title || payload.subject || payload.url || `news-${Date.now()}-${idx}`; const body = payload.body_plain || payload.body || payload.content || payload.text || ''; return { json: { title: String(title), url: payload.url ? String(payload.url) : null, published_at: payload.published_at || null, body_plain: String(body) } }; });"
+      },
+      "id": "map_news",
+      "name": "Map News Item",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
         "url": "http://api:8000/v1/ingest/news_item",
         "sendHeaders": true,
         "headerParameters": {
@@ -25,17 +38,53 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{$json}}"
+        "jsonBody": "={{$json}}",
+        "options": {}
       },
       "id": "post_news",
       "name": "POST News Item",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [520, 260]
+      "position": [780, 300],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.filter((item) => !item.json?.error);"
+      },
+      "id": "success_only",
+      "name": "Success Only",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1060, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.filter((item) => Boolean(item.json?.error)).map((item) => ({ json: { workflow: 'news_ingest', failed_at: new Date().toISOString(), endpoint: 'http://api:8000/v1/ingest/news_item', error: item.json.error, response_payload: item.json } }));"
+      },
+      "id": "dead_letter_payload",
+      "name": "Dead Letter Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1060, 380]
     }
   ],
   "connections": {
     "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Map News Item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map News Item": {
       "main": [
         [
           {
@@ -45,6 +94,25 @@
           }
         ]
       ]
+    },
+    "POST News Item": {
+      "main": [
+        [
+          {
+            "node": "Success Only",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Dead Letter Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
+  },
+  "settings": {
+    "executionOrder": "v1"
   }
 }

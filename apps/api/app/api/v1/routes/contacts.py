@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_db, get_settings_dep
 from app.api.v1.schemas import ContactLookupResponse, ContactsSyncRequest
 from app.core.security import verify_webhook_secret, webhook_secret_header
-from app.db.pg.models import ContactCache
+from app.db.neo4j.queries import delete_contact_graph
+from app.db.pg.models import ContactCache, Draft, ResolutionTask
 from app.services.contacts_registry.sync import sync_contacts
 from app.services.resolution.tasks import create_identity_resolution_task
 
 router = APIRouter(prefix="/contacts", tags=["contacts"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/sync")
@@ -46,3 +50,31 @@ def lookup_contact(email: str, db: Session = Depends(get_db)) -> ContactLookupRe
         display_name=None,
         resolution_task_id=task.task_id,
     )
+
+
+@router.delete("/{contact_id}")
+def delete_contact(contact_id: str, db: Session = Depends(get_db)) -> dict:
+    contact = db.get(ContactCache, contact_id)
+    if contact is None:
+        return {"contact_id": contact_id, "deleted": False}
+
+    db.execute(delete(Draft).where(Draft.contact_id == contact_id))
+    db.execute(delete(ResolutionTask).where(ResolutionTask.contact_id == contact_id))
+    db.delete(contact)
+    db.commit()
+
+    graph_deleted = True
+    graph_delete_error: str | None = None
+    try:
+        delete_contact_graph(contact_id)
+    except Exception as exc:  # pragma: no cover - defensive path for external db outages
+        graph_deleted = False
+        graph_delete_error = str(exc)
+        logger.exception("Failed deleting contact graph for contact_id=%s", contact_id)
+
+    return {
+        "contact_id": contact_id,
+        "deleted": True,
+        "graph_deleted": graph_deleted,
+        "graph_delete_error": graph_delete_error,
+    }

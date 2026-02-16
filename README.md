@@ -57,6 +57,12 @@ Fallback policy:
 - `MEM0_ENABLE_RULES_FALLBACK=false` by default.
 - Set these to `true` only as temporary rescue mode in local development.
 
+Backfill behavior:
+- `BACKFILL_CONTACT_MODE=skip_previously_processed` skips contacts that already have processed interactions.
+- `BACKFILL_CONTACT_MODE=reprocess_all` processes all contacts and requeues duplicate interactions for reprocessing.
+- `BACKFILL_API_BASE_URL` is used by the n8n backfill workflow to read processed-contact status.
+- `BACKFILL_YEARS_BACK`, `BACKFILL_WINDOW_SIZE_MONTHS`, and `BACKFILL_MAX_CONTACTS_PER_RUN` control backfill range/window/limit without editing workflow code.
+
 ## Tests
 ```bash
 cd apps/api

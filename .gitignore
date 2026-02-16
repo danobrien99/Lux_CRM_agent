@@ -8,3 +8,8 @@ node_modules
 .vscode
 __pycache__
 *.db
+
+# local-only
+.GoogleOAuth.json
+.DS_Store
+n8n/.DS_Store

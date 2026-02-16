@@ -19,7 +19,8 @@ dependencies = [
   "google-api-python-client>=2.149.0",
   "google-auth>=2.35.0",
   "python-dotenv>=1.0.1",
-  "orjson>=3.10.6"
+  "orjson>=3.10.6",
+  "openai>=1.52.0"
 ]
 
 [project.optional-dependencies]

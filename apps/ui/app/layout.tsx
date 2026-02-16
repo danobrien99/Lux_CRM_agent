@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
-import { Crimson_Text, Space_Grotesk } from "next/font/google";
+import { Montserrat, Playfair_Display } from "next/font/google";
 
 import { TopNav } from "@/components/top-nav";
 import "./globals.css";
 
-const sans = Space_Grotesk({ subsets: ["latin"], variable: "--font-sans" });
-const serif = Crimson_Text({ subsets: ["latin"], variable: "--font-serif", weight: ["400", "600"] });
+const sans = Montserrat({ subsets: ["latin"], variable: "--font-sans", weight: ["300", "400", "500"] });
+const serif = Playfair_Display({ subsets: ["latin"], variable: "--font-serif", weight: ["400", "500", "600"] });
 
 export const metadata: Metadata = {
   title: "Lux CRM Agent",

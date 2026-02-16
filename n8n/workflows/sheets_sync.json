@@ -2,6 +2,14 @@
   "name": "sheets_sync",
   "nodes": [
     {
+      "parameters": {},
+      "id": "manual",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [220, 120]
+    },
+    {
       "parameters": {
         "rule": {
           "interval": [
@@ -16,10 +24,41 @@
       "name": "Daily Trigger",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [220, 240]
+      "position": [220, 300]
     },
     {
       "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "read",
+        "sheetId": "1_126A0A6-yX6n5sQYmsH_Jbk900yzjDaUy4jyX_aWT0",
+        "range": "Contacts!A:Z",
+        "dataStartRow": 2,
+        "keyRow": 1,
+        "options": {
+          "continue": true,
+          "valueRenderMode": "UNFORMATTED_VALUE"
+        }
+      },
+      "id": "read_contacts_sheet",
+      "name": "Read Contacts Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 2,
+      "position": [500, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "const toBool = (value) => { if (typeof value === 'boolean') return value; if (value === null || value === undefined) return false; return ['1', 'true', 'yes', 'y', 'on'].includes(String(value).trim().toLowerCase()); }; const readField = (source, keys) => { for (const key of keys) { if (source[key] !== undefined && source[key] !== null && String(source[key]).trim() !== '') return source[key]; } return ''; }; const rows = items.map((item) => { const source = item.json ?? {}; const contactId = String(readField(source, ['contact_id', 'contactId', 'Contact ID', 'ContactId'])).trim(); const primaryEmail = String(readField(source, ['primary_email', 'primaryEmail', 'Primary Email', 'Email'])).trim().toLowerCase(); if (!contactId || !primaryEmail) return null; const firstName = readField(source, ['first_name', 'firstName', 'First Name']); const lastName = readField(source, ['last_name', 'lastName', 'Last Name']); const displayNameRaw = readField(source, ['display_name', 'displayName', 'Name', 'Full Name']); const joinedName = [firstName, lastName].map((part) => String(part || '').trim()).filter(Boolean).join(' '); const displayName = displayNameRaw ? String(displayNameRaw).trim() : (joinedName || null); const company = readField(source, ['company', 'Company', 'organization', 'Organization', 'org', 'Org']); const ownerUserId = readField(source, ['owner_user_id', 'ownerUserId', 'Owner User ID']); const notes = readField(source, ['notes', 'Notes']); const useSensitive = readField(source, ['use_sensitive_in_drafts', 'useSensitiveInDrafts', 'Use Sensitive In Drafts']); return { contact_id: contactId, primary_email: primaryEmail, display_name: displayName, first_name: firstName ? String(firstName).trim() : null, last_name: lastName ? String(lastName).trim() : null, company: company ? String(company).trim() : null, owner_user_id: ownerUserId ? String(ownerUserId).trim() : null, notes: notes ? String(notes).trim() : null, use_sensitive_in_drafts: toBool(useSensitive) }; }).filter(Boolean); return [{ json: { mode: 'push', rows } }];"
+      },
+      "id": "build_push_payload",
+      "name": "Build Push Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [780, 220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
         "url": "http://api:8000/v1/contacts/sync",
         "sendHeaders": true,
         "headerParameters": {
@@ -32,17 +71,75 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\"mode\":\"pull\"}"
+        "jsonBody": "={{$json}}",
+        "options": {}
       },
       "id": "post_sync",
       "name": "POST Contacts Sync",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [520, 240]
+      "position": [1060, 220],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.filter((item) => !item.json?.error);"
+      },
+      "id": "success_only",
+      "name": "Success Only",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 140]
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.filter((item) => Boolean(item.json?.error)).map((item) => ({ json: { workflow: 'sheets_sync', failed_at: new Date().toISOString(), endpoint: 'http://api:8000/v1/contacts/sync', error: item.json.error, response_payload: item.json } }));"
+      },
+      "id": "dead_letter_payload",
+      "name": "Dead Letter Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 300]
     }
   ],
   "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Contacts Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Daily Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Contacts Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Contacts Sheet": {
+      "main": [
+        [
+          {
+            "node": "Build Push Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Push Payload": {
       "main": [
         [
           {
@@ -52,6 +149,25 @@
           }
         ]
       ]
+    },
+    "POST Contacts Sync": {
+      "main": [
+        [
+          {
+            "node": "Success Only",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Dead Letter Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
+  },
+  "settings": {
+    "executionOrder": "v1"
   }
 }
