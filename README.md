@@ -51,6 +51,11 @@ Default adapter entrypoints are configured in `.env.example`:
 - `MEM0_LOCAL_MODULE=app.integrations.mem0_oss_adapter`
 - `COGNEE_REPO_PATH=../Third_Party/cognee`
 - `MEM0_REPO_PATH=../Third_Party/mem0`
+- `ONTOLOGY_CONFIG_PATH=app/services/ontology/ontology_config.json`
+
+Ontology mapping:
+- Canonical claim/predicate/entity mapping is user-configurable in `apps/api/app/services/ontology/ontology_config.json`.
+- You can point to a different file via `ONTOLOGY_CONFIG_PATH`.
 
 Fallback policy:
 - `COGNEE_ENABLE_HEURISTIC_FALLBACK=false` by default.
@@ -58,10 +63,9 @@ Fallback policy:
 - Set these to `true` only as temporary rescue mode in local development.
 
 Backfill behavior:
-- `BACKFILL_CONTACT_MODE=skip_previously_processed` skips contacts that already have processed interactions.
-- `BACKFILL_CONTACT_MODE=reprocess_all` processes all contacts and requeues duplicate interactions for reprocessing.
-- `BACKFILL_API_BASE_URL` is used by the n8n backfill workflow to read processed-contact status.
-- `BACKFILL_YEARS_BACK`, `BACKFILL_WINDOW_SIZE_MONTHS`, and `BACKFILL_MAX_CONTACTS_PER_RUN` control backfill range/window/limit without editing workflow code.
+- Configure `YEARS_BACK`, `WINDOW_SIZE_MONTHS`, `MAX_CONTACTS_PER_RUN`, and `BACKFILL_CONTACT_MODE` directly in the `Build Contact Queue` code node of `gmail_contact_backfill`.
+- `BACKFILL_CONTACT_MODE='skip_previously_processed'` skips contacts that already have processed interactions.
+- `BACKFILL_CONTACT_MODE='reprocess_all'` processes all contacts and requeues duplicate interactions for reprocessing.
 
 ## Tests
 ```bash

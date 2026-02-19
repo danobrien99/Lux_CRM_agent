@@ -1,0 +1,106 @@
+{
+  "version": "1.0",
+  "description": "User-editable ontology mapping for canonical claim types, predicates, and entity kinds.",
+  "predicate_aliases": {
+    "employment_change": "works_at",
+    "employed_by": "works_at",
+    "current_employer": "works_at",
+    "works_for": "works_at",
+    "talked_about": "discussed_topic",
+    "discussion": "discussed_topic",
+    "discussed": "discussed_topic",
+    "topic": "discussed_topic",
+    "child_attends": "has_education_detail",
+    "school": "has_education_detail",
+    "family_detail": "has_family_detail",
+    "interest": "has_preference",
+    "preference": "has_preference",
+    "goal": "has_opportunity",
+    "opportunity": "has_opportunity"
+  },
+  "predicate_claim_type": {
+    "works_at": "employment",
+    "discussed_topic": "topic",
+    "related_to": "topic",
+    "has_personal_detail": "personal_detail",
+    "has_preference": "preference",
+    "committed_to": "commitment",
+    "has_opportunity": "opportunity",
+    "located_in": "location",
+    "has_family_detail": "family",
+    "has_education_detail": "education"
+  },
+  "claim_types": {
+    "topic": {
+      "default_predicate": "discussed_topic",
+      "subject_kind": "Contact",
+      "object_kind": "Topic",
+      "sensitive": false,
+      "high_value": false
+    },
+    "employment": {
+      "default_predicate": "works_at",
+      "subject_kind": "Contact",
+      "object_kind": "Company",
+      "sensitive": false,
+      "high_value": true
+    },
+    "personal_detail": {
+      "default_predicate": "has_personal_detail",
+      "subject_kind": "Contact",
+      "object_kind": "PersonalDetail",
+      "sensitive": true,
+      "high_value": true
+    },
+    "preference": {
+      "default_predicate": "has_preference",
+      "subject_kind": "Contact",
+      "object_kind": "Preference",
+      "sensitive": false,
+      "high_value": true
+    },
+    "commitment": {
+      "default_predicate": "committed_to",
+      "subject_kind": "Contact",
+      "object_kind": "Commitment",
+      "sensitive": false,
+      "high_value": true
+    },
+    "opportunity": {
+      "default_predicate": "has_opportunity",
+      "subject_kind": "Contact",
+      "object_kind": "Opportunity",
+      "sensitive": false,
+      "high_value": true
+    },
+    "location": {
+      "default_predicate": "located_in",
+      "subject_kind": "Contact",
+      "object_kind": "Location",
+      "sensitive": false,
+      "high_value": false
+    },
+    "family": {
+      "default_predicate": "has_family_detail",
+      "subject_kind": "Contact",
+      "object_kind": "FamilyMember",
+      "sensitive": true,
+      "high_value": true
+    },
+    "education": {
+      "default_predicate": "has_education_detail",
+      "subject_kind": "Contact",
+      "object_kind": "Institution",
+      "sensitive": false,
+      "high_value": false
+    }
+  },
+  "high_value_predicates": [
+    "works_at",
+    "committed_to",
+    "has_opportunity",
+    "has_preference",
+    "has_personal_detail",
+    "has_family_detail"
+  ]
+}

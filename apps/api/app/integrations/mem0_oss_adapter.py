@@ -4,6 +4,7 @@ import copy
 import importlib
 import importlib.metadata
 import json
+import logging
 import os
 import sys
 import uuid
@@ -12,13 +13,26 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
+from app.services.ontology import map_relation_to_claim, map_topic_to_claim
 from app.services.prompts import render_prompt
+
+logger = logging.getLogger(__name__)
+
+
+def _candidate_claims(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = bundle.get("candidate_claims")
+    if isinstance(candidates, list):
+        return candidates
+    legacy_candidates = bundle.get("cognee_candidates")
+    if isinstance(legacy_candidates, list):
+        return legacy_candidates
+    return []
 
 
 def _fallback_ops(bundle: dict[str, Any]) -> list[dict[str, Any]]:
     threshold = float(bundle.get("auto_accept_threshold", 0.9))
     ops: list[dict[str, Any]] = []
-    for claim in bundle.get("cognee_candidates", []):
+    for claim in _candidate_claims(bundle):
         claim_copy = copy.deepcopy(claim)
         confidence = float(claim_copy.get("confidence", 0.0))
         if confidence >= threshold:
@@ -134,7 +148,15 @@ def _memory_instance() -> Any:
         "vector_store": _build_vector_store_config(),
         "graph_store": _build_graph_store_config(),
     }
-    return memory_cls.from_config(config)
+    try:
+        return memory_cls.from_config(config)
+    except ImportError as exc:
+        if "langchain_neo4j" not in str(exc):
+            raise
+        logger.warning("mem0_graph_store_unavailable_fallback_vector_only")
+        fallback_config = dict(config)
+        fallback_config.pop("graph_store", None)
+        return memory_cls.from_config(fallback_config)
 
 
 def _scope_ids(bundle: dict[str, Any]) -> tuple[str, str, str | None]:
@@ -149,7 +171,7 @@ def _scope_ids(bundle: dict[str, Any]) -> tuple[str, str, str | None]:
 
 def _evidence_refs_from_bundle(bundle: dict[str, Any]) -> list[dict[str, Any]]:
     evidence_refs: list[dict[str, Any]] = []
-    for claim in bundle.get("cognee_candidates", []):
+    for claim in _candidate_claims(bundle):
         for ref in claim.get("evidence_refs", []):
             if not isinstance(ref, dict):
                 continue
@@ -173,7 +195,7 @@ def _evidence_refs_from_bundle(bundle: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _compose_messages(bundle: dict[str, Any]) -> list[dict[str, Any]]:
     summary = str(bundle.get("new_interaction_summary", "")).strip()
-    candidates = bundle.get("cognee_candidates", [])
+    candidates = _candidate_claims(bundle)
     recent_claims = bundle.get("recent_claims", [])
     content = render_prompt(
         "mem0_relationship_updates_user",
@@ -196,21 +218,6 @@ def _iter_dicts(payload: Any) -> list[dict[str, Any]]:
     return rows
 
 
-def _claim_type_for_relation(predicate: str) -> str:
-    normalized = predicate.lower()
-    employment_markers = {
-        "works_at",
-        "employed_by",
-        "current_employer",
-        "joined",
-        "left",
-        "employment_change",
-    }
-    if normalized in employment_markers or "employ" in normalized or "works" in normalized:
-        return "employment"
-    return "topic"
-
-
 def _stable_claim_id(claim_type: str, value_json: dict[str, Any]) -> str:
     payload = f"{claim_type}:{json.dumps(value_json, sort_keys=True, ensure_ascii=True)}"
     return str(uuid.uuid5(uuid.NAMESPACE_URL, payload))
@@ -222,42 +229,28 @@ def _claim_from_relation(
     threshold: float,
     evidence_refs: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    source = str(relation.get("source") or relation.get("subject") or "").strip()
-    predicate = str(relation.get("relationship") or relation.get("predicate") or "").strip()
-    destination = str(relation.get("destination") or relation.get("target") or relation.get("object") or "").strip()
-    if not source or not predicate or not destination:
+    mapped_claim = map_relation_to_claim(
+        relation,
+        source_system="mem0",
+        default_confidence=0.82,
+    )
+    if mapped_claim is None:
         return None
-
-    claim_type = _claim_type_for_relation(predicate)
-    if claim_type == "employment":
-        value_json = {
-            "subject": source,
-            "company": destination,
-            "predicate": predicate,
-        }
-    else:
-        value_json = {
-            "subject": source,
-            "predicate": predicate,
-            "object": destination,
-        }
-
-    confidence = float(relation.get("confidence", 0.82))
-    status = "accepted" if confidence >= threshold else "proposed"
+    claim_type = str(mapped_claim.get("claim_type") or "topic")
+    value_json = mapped_claim.get("value_json")
+    if not isinstance(value_json, dict):
+        return None
+    confidence = float(mapped_claim.get("confidence", relation.get("confidence", 0.82)))
+    status = str(mapped_claim.get("status") or "proposed")
+    if status == "proposed" and confidence >= threshold:
+        status = "accepted"
+    mapped_claim["claim_id"] = _stable_claim_id(claim_type, value_json)
+    mapped_claim["status"] = status
+    mapped_claim["confidence"] = confidence
+    mapped_claim["evidence_refs"] = evidence_refs
     return {
         "op": "ADD",
-        "claim": {
-            "claim_id": _stable_claim_id(claim_type, value_json),
-            "claim_type": claim_type,
-            "value_json": value_json,
-            "status": status,
-            "sensitive": False,
-            "valid_from": None,
-            "valid_to": None,
-            "confidence": confidence,
-            "source_system": "mem0",
-            "evidence_refs": evidence_refs,
-        },
+        "claim": mapped_claim,
         "target_claim_id": None,
         "evidence_refs": evidence_refs,
     }
@@ -286,7 +279,15 @@ def _claim_from_memory_result(
     if status == "proposed" and confidence >= threshold:
         status = "accepted"
 
-    value_json = {"label": memory_text}
+    mapped_topic = map_topic_to_claim(
+        {"label": memory_text, "confidence": confidence},
+        source_system="mem0",
+    )
+    if mapped_topic is None:
+        return None
+    value_json = mapped_topic.get("value_json")
+    if not isinstance(value_json, dict):
+        return None
     return {
         "op": op,
         "claim": {
@@ -294,7 +295,7 @@ def _claim_from_memory_result(
             "claim_type": "topic",
             "value_json": value_json,
             "status": status,
-            "sensitive": False,
+            "sensitive": bool(mapped_topic.get("sensitive", False)),
             "valid_from": None,
             "valid_to": None,
             "confidence": confidence,
@@ -317,7 +318,10 @@ def _ops_from_mem0_outputs(
     memories: list[dict[str, Any]] = []
 
     for row in _iter_dicts(add_response) + _iter_dicts(search_response):
-        if {"source", "relationship"} <= set(row.keys()) and ("destination" in row or "target" in row):
+        has_relation_shape = (
+            {"source", "relationship"} <= set(row.keys()) and ("destination" in row or "target" in row or "object" in row)
+        ) or {"subject", "predicate", "object"} <= set(row.keys())
+        if has_relation_shape:
             relations.append(row)
         if "memory" in row or "event" in row:
             memories.append(row)

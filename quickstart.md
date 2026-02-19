@@ -2,6 +2,15 @@
 
 ## 1. Backend Python Environment (required)
 
+### Build + run:
+```
+docker compose up -d --build api worker
+```
+### Fast restarts:
+```
+docker compose restart api worker
+```
+
 ```bash
 cd /Users/dobrien/code/Lux/Lux_CRM_agent/apps/api
 deactivate 2>/dev/null || true

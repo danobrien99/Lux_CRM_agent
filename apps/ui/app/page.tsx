@@ -1,4 +1,5 @@
 import { apiGet } from "@/lib/api";
+import { PriorityOpportunities } from "@/components/priority-opportunities";
 import { PriorityContactsBrowser, type ScoreItem } from "@/components/priority-contacts-browser";
 
 type ScoreResponse = {
@@ -21,51 +22,6 @@ const serviceCards = [
   },
 ];
 
-const projectTiles = [
-  {
-    title: "Board Outreach Program",
-    category: "Executive Network",
-    shape: "portrait",
-    image:
-      "https://images.unsplash.com/photo-1460925895917-afdab827c52f?auto=format&fit=crop&w=1000&q=80",
-  },
-  {
-    title: "Investor Re-engagement",
-    category: "Capital Partners",
-    shape: "landscape",
-    image:
-      "https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?auto=format&fit=crop&w=1400&q=80",
-  },
-  {
-    title: "Strategic Introductions",
-    category: "Partnerships",
-    shape: "square",
-    image:
-      "https://images.unsplash.com/photo-1552664730-d307ca884978?auto=format&fit=crop&w=1200&q=80",
-  },
-  {
-    title: "Quarterly Relationship Review",
-    category: "Portfolio",
-    shape: "portrait",
-    image:
-      "https://images.unsplash.com/photo-1551836022-d5d88e9218df?auto=format&fit=crop&w=1000&q=80",
-  },
-  {
-    title: "Client Renewal Campaign",
-    category: "Revenue Accounts",
-    shape: "landscape",
-    image:
-      "https://images.unsplash.com/photo-1497215728101-856f4ea42174?auto=format&fit=crop&w=1400&q=80",
-  },
-  {
-    title: "Founder Advisory Pulse",
-    category: "Advisory Board",
-    shape: "square",
-    image:
-      "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1200&q=80",
-  },
-] as const;
-
 async function getScores(): Promise<ScoreResponse | null> {
   try {
     return await apiGet<ScoreResponse>("/scores/today?limit=500");
@@ -82,17 +38,17 @@ export default async function HomePage() {
       <section className="heroSection">
         <div className="heroInner">
           <p className="heroKicker">Relationship Intelligence Platform</p>
-          <h1 className="heroTitle">Luxury-Grade Relationship Operations for High-Value Networks</h1>
+          <h1 className="heroTitle">Strategic Contact Management System.</h1>
           <p className="heroBody">
-            LUX combines interaction intelligence, editorial-grade context, and graph-native memory so each conversation feels
-            deliberate.
+            LUX CRM - intelligent contact management based on interaction tracking, knowledge extraction, and context memory so
+            conversations feel personal and deliberate
           </p>
           <div className="heroActions">
             <a className="ctaButton" href="#priority-contacts">
-              View Priority Dashboard
+              View Priority Contacts
             </a>
-            <a className="ghostButton" href="#recent-projects">
-              Explore Recent Projects
+            <a className="ghostButton" href="#priority-opportunities">
+              Explore Priority Opportunities
             </a>
           </div>
         </div>
@@ -112,20 +68,12 @@ export default async function HomePage() {
         </div>
       </section>
 
-      <section id="recent-projects" className="projectsSection">
-        <p className="sectionEyebrow">Recent Projects</p>
-        <h2 className="sectionTitle">Client Portfolio</h2>
-        <div className="masonryGrid">
-          {projectTiles.map((tile) => (
-            <article key={tile.title} className={`projectTile ${tile.shape}`}>
-              <img src={tile.image} alt={tile.title} loading="lazy" />
-              <div className="projectOverlay">
-                <p>{tile.category}</p>
-                <h3>{tile.title}</h3>
-              </div>
-            </article>
-          ))}
-        </div>
+      <section id="priority-opportunities" className="projectsSection">
+        <p className="sectionEyebrow">Priority Opportunities</p>
+        <h2 className="sectionTitle">Priority Opportunities</h2>
+        {!data && <p className="muted">API unavailable. Start backend on port 8000.</p>}
+        {data && data.items.length === 0 && <p className="muted">No priority opportunities identified yet.</p>}
+        {data && data.items.length > 0 && <PriorityOpportunities items={data.items} />}
       </section>
 
       <section id="priority-contacts" className="dashboardSection">

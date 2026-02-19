@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -50,6 +51,22 @@ def _run_async(coro: Any) -> Any:
 
 def _import_cognee_module() -> Any:
     settings = get_settings()
+    openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if openai_api_key and not os.getenv("LLM_API_KEY"):
+        # Cognee reads provider credentials from its own LLM_* env names.
+        os.environ["LLM_API_KEY"] = openai_api_key
+    if openai_api_key and not os.getenv("EMBEDDING_API_KEY"):
+        os.environ["EMBEDDING_API_KEY"] = openai_api_key
+    if settings.llm_provider and not os.getenv("LLM_PROVIDER"):
+        os.environ["LLM_PROVIDER"] = settings.llm_provider
+    if settings.llm_model and not os.getenv("LLM_MODEL"):
+        os.environ["LLM_MODEL"] = settings.llm_model
+    if settings.embedding_provider and not os.getenv("EMBEDDING_PROVIDER"):
+        os.environ["EMBEDDING_PROVIDER"] = settings.embedding_provider
+    if settings.embedding_model and not os.getenv("EMBEDDING_MODEL"):
+        os.environ["EMBEDDING_MODEL"] = settings.embedding_model
+    if settings.embedding_dim and not os.getenv("EMBEDDING_DIMENSIONS"):
+        os.environ["EMBEDDING_DIMENSIONS"] = str(settings.embedding_dim)
     try:
         import cognee  # type: ignore
 
@@ -127,6 +144,20 @@ def _walk_payload(payload: Any, collector: list[dict[str, Any]]) -> None:
             _walk_payload(decoded, collector)
 
 
+def _candidate_dicts(entry: Any) -> list[dict[str, Any]]:
+    if isinstance(entry, dict):
+        return [entry]
+    if isinstance(entry, str):
+        parsed: list[dict[str, Any]] = []
+        for decoded in _extract_json_blocks(entry):
+            if isinstance(decoded, dict):
+                parsed.append(decoded)
+            elif isinstance(decoded, list):
+                parsed.extend(item for item in decoded if isinstance(item, dict))
+        return parsed
+    return []
+
+
 def _normalize_entities(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
     entities: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -140,21 +171,26 @@ def _normalize_entities(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
             candidates.append(item)
 
         for entry in candidates:
-            name = str(entry.get("name") or entry.get("entity") or "").strip()
-            kind = str(entry.get("type") or entry.get("entity_type") or "Entity").strip()
-            if not name:
-                continue
-            key = (name.lower(), kind.lower())
-            if key in seen:
-                continue
-            seen.add(key)
-            entities.append(
-                {
-                    "name": name,
-                    "type": kind,
-                    "confidence": float(entry.get("confidence", 0.75)),
-                }
-            )
+            parsed_entries = _candidate_dicts(entry)
+            if not parsed_entries and isinstance(entry, str) and entry.strip():
+                parsed_entries = [{"name": entry.strip(), "type": "Entity", "confidence": 0.65}]
+
+            for parsed in parsed_entries:
+                name = str(parsed.get("name") or parsed.get("entity") or "").strip()
+                kind = str(parsed.get("type") or parsed.get("entity_type") or "Entity").strip()
+                if not name:
+                    continue
+                key = (name.lower(), kind.lower())
+                if key in seen:
+                    continue
+                seen.add(key)
+                entities.append(
+                    {
+                        "name": name,
+                        "type": kind,
+                        "confidence": float(parsed.get("confidence", 0.75)),
+                    }
+                )
     return entities
 
 
@@ -171,24 +207,26 @@ def _normalize_relations(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
             candidates.append(item)
 
         for entry in candidates:
-            subject = str(entry.get("subject") or entry.get("source") or "").strip()
-            predicate = str(entry.get("predicate") or entry.get("relationship") or "").strip()
-            obj = str(entry.get("object") or entry.get("destination") or entry.get("target") or "").strip()
-            if not subject or not predicate or not obj:
-                continue
-            key = (subject.lower(), predicate.lower(), obj.lower())
-            if key in seen:
-                continue
-            seen.add(key)
-            relations.append(
-                {
-                    "subject": subject,
-                    "predicate": predicate,
-                    "object": obj,
-                    "confidence": float(entry.get("confidence", 0.8)),
-                    "evidence_spans": list(entry.get("evidence_spans", [])),
-                }
-            )
+            for parsed in _candidate_dicts(entry):
+                subject = str(parsed.get("subject") or parsed.get("source") or "").strip()
+                predicate = str(parsed.get("predicate") or parsed.get("relationship") or "").strip()
+                obj = str(parsed.get("object") or parsed.get("destination") or parsed.get("target") or "").strip()
+                if not subject or not predicate or not obj:
+                    continue
+                key = (subject.lower(), predicate.lower(), obj.lower())
+                if key in seen:
+                    continue
+                seen.add(key)
+                evidence_spans = parsed.get("evidence_spans", [])
+                relations.append(
+                    {
+                        "subject": subject,
+                        "predicate": predicate,
+                        "object": obj,
+                        "confidence": float(parsed.get("confidence", 0.8)),
+                        "evidence_spans": evidence_spans if isinstance(evidence_spans, list) else [],
+                    }
+                )
     return relations
 
 
@@ -203,19 +241,24 @@ def _normalize_topics(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
             candidates.append(item)
 
         for entry in candidates:
-            label = str(entry.get("label") or entry.get("topic") or "").strip()
-            if not label:
-                continue
-            normalized = label.lower()
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            topics.append(
-                {
-                    "label": label,
-                    "confidence": float(entry.get("confidence", 0.75)),
-                }
-            )
+            parsed_entries = _candidate_dicts(entry)
+            if not parsed_entries and isinstance(entry, str) and entry.strip():
+                parsed_entries = [{"label": entry.strip(), "confidence": 0.65}]
+
+            for parsed in parsed_entries:
+                label = str(parsed.get("label") or parsed.get("topic") or "").strip()
+                if not label:
+                    continue
+                normalized = label.lower()
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                topics.append(
+                    {
+                        "label": label,
+                        "confidence": float(parsed.get("confidence", 0.75)),
+                    }
+                )
     return topics
 
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import copy
+import json
 import logging
+import uuid
 from statistics import mean
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from sqlalchemy import delete, select
 
@@ -27,6 +30,7 @@ from app.services.memory.contradiction import detect_contradictions
 from app.services.memory.mem0_client import propose_memory_ops
 from app.services.memory.mem0_mapper import build_mem0_bundle
 from app.services.news.match_contacts import match_contacts_for_news
+from app.services.ontology import relation_payload_from_claim
 from app.services.resolution.tasks import (
     create_graph_relation_resolution_task,
     create_identity_resolution_task,
@@ -141,12 +145,28 @@ def _derive_trigger_score(contact_interactions: list[Interaction], now: datetime
     return min(15.0, score)
 
 
-def _claims_from_ops(ops: list[dict], default_evidence_refs: list[dict], interaction_id: str) -> list[dict]:
+def _scope_claim_id(base_claim_id: str, *, contact_id: str, interaction_id: str) -> str:
+    seed = f"{contact_id}:{interaction_id}:{base_claim_id}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
+
+
+def _claims_from_ops(
+    ops: list[dict],
+    default_evidence_refs: list[dict],
+    interaction_id: str,
+    contact_id: str,
+) -> list[dict]:
     claims: list[dict] = []
     for op in ops:
         claim = copy.deepcopy(op.get("claim") or {})
         if not claim:
             continue
+        base_claim_id = _normalized_text(claim.get("claim_id")) or str(uuid.uuid4())
+        claim["claim_id"] = _scope_claim_id(
+            base_claim_id,
+            contact_id=contact_id,
+            interaction_id=interaction_id,
+        )
         operation = op.get("op", "ADD")
         if operation == "REJECT":
             claim["status"] = "rejected"
@@ -171,49 +191,53 @@ def _normalized_text(value: object) -> str:
     return " ".join(value.split()).strip()
 
 
-def _relation_payload_from_claim(claim: dict[str, object]) -> dict[str, object] | None:
+def _claim_identity(claim: dict[str, object]) -> tuple[str, str]:
+    claim_id = _normalized_text(claim.get("claim_id"))
+    claim_type = _normalized_text(claim.get("claim_type")).lower() or "topic"
     value_json = claim.get("value_json")
-    if not isinstance(value_json, dict):
-        return None
+    if isinstance(value_json, dict):
+        try:
+            serialized_value = json.dumps(value_json, sort_keys=True, ensure_ascii=True)
+        except Exception:
+            serialized_value = str(value_json)
+    else:
+        serialized_value = "{}"
+    return claim_id, f"{claim_type}:{serialized_value}"
 
-    claim_type = _normalized_text(claim.get("claim_type"))
-    subject = _normalized_text(value_json.get("subject")) or "contact"
 
-    predicate = _normalized_text(value_json.get("predicate"))
-    if not predicate:
-        if claim_type == "employment":
-            predicate = "works_at"
-        elif claim_type == "topic":
-            predicate = "discussed_topic"
-        else:
-            predicate = "related_to"
+def _dedupe_claims(existing_claims: list[dict], candidate_claims: list[dict]) -> list[dict]:
+    existing_ids: set[str] = set()
+    existing_fingerprints: set[str] = set()
+    for claim in existing_claims:
+        claim_id, fingerprint = _claim_identity(claim)
+        if claim_id:
+            existing_ids.add(claim_id)
+        existing_fingerprints.add(fingerprint)
 
-    object_name = (
-        _normalized_text(value_json.get("object"))
-        or _normalized_text(value_json.get("company"))
-        or _normalized_text(value_json.get("destination"))
-        or _normalized_text(value_json.get("target"))
-        or _normalized_text(value_json.get("label"))
-    )
-    if not object_name:
-        return None
+    deduped: list[dict] = []
+    for claim in candidate_claims:
+        claim_id, fingerprint = _claim_identity(claim)
+        if claim_id and claim_id in existing_ids:
+            continue
+        if fingerprint in existing_fingerprints:
+            continue
+        if claim_id:
+            existing_ids.add(claim_id)
+        existing_fingerprints.add(fingerprint)
+        deduped.append(claim)
+    return deduped
 
-    if object_name.lower() == subject.lower():
-        return None
 
-    object_kind = _normalized_text(value_json.get("object_type")) or "Entity"
-    if claim_type == "employment" and object_kind == "Entity":
-        object_kind = "Company"
-    if claim_type == "topic" and _normalized_text(value_json.get("label")):
-        object_kind = "Topic"
-
-    return {
-        "subject_name": subject,
-        "predicate": predicate,
-        "object_name": object_name,
-        "subject_kind": _normalized_text(value_json.get("subject_type")) or ("Contact" if subject == "contact" else "Entity"),
-        "object_kind": object_kind,
+def _merge_relation_stats(*stats: dict[str, int]) -> dict[str, Any]:
+    merged = {
+        "persisted_relations": 0,
+        "uncertain_relations": 0,
+        "conflicting_relations": 0,
     }
+    for entry in stats:
+        for key in merged:
+            merged[key] += int(entry.get(key, 0))
+    return merged
 
 
 def _persist_relation_claims_for_contact(
@@ -235,7 +259,7 @@ def _persist_relation_claims_for_contact(
         if not claim_id or claim_id in seen_claim_ids:
             continue
 
-        relation_payload = _relation_payload_from_claim(claim)
+        relation_payload = relation_payload_from_claim(claim)
         if relation_payload is None:
             continue
 
@@ -268,8 +292,7 @@ def _persist_relation_claims_for_contact(
 
         persisted += 1
         conflict = result.get("conflict")
-        predicate_norm = _normalized_text(result.get("predicate")).lower()
-        high_value_predicate = predicate_norm not in {"discussed_topic", "related_to"}
+        high_value_predicate = bool(relation_payload.get("high_value"))
         needs_review = bool(conflict) or (is_uncertain and (claim_type == "employment" or high_value_predicate) and confidence >= 0.35)
         if needs_review:
             uncertain += 1
@@ -331,6 +354,7 @@ def _hybrid_graph_vector_signals(db, contact_id: str, objective_seed: str) -> tu
 def process_interaction(interaction_id: str) -> None:
     settings = get_settings()
     db = SessionLocal()
+    interaction: Interaction | None = None
     try:
         interaction = db.scalar(select(Interaction).where(Interaction.interaction_id == interaction_id))
         if interaction is None:
@@ -381,7 +405,20 @@ def process_interaction(interaction_id: str) -> None:
         if chunks:
             insert_chunk_embeddings(db, chunks, settings.embedding_model)
 
-        candidates = extract_candidates(interaction.interaction_id, body_text)
+        try:
+            candidates = extract_candidates(interaction.interaction_id, body_text)
+        except Exception:
+            logger.exception(
+                "interaction_cognee_extraction_failed",
+                extra={"interaction_id": interaction.interaction_id},
+            )
+            candidates = {
+                "interaction_id": interaction.interaction_id,
+                "entities": [],
+                "relations": [],
+                "topics": [],
+                "signature": "",
+            }
         proposed_claims = candidates_to_claims(candidates)
 
         evidence_refs = [
@@ -394,10 +431,15 @@ def process_interaction(interaction_id: str) -> None:
         ]
 
         for contact_id in contact_ids:
-            existing_claims = get_contact_claims(contact_id, status="accepted")
             prepared_candidates = []
             for claim in proposed_claims:
                 claim_copy = copy.deepcopy(claim)
+                base_claim_id = _normalized_text(claim_copy.get("claim_id")) or str(uuid.uuid4())
+                claim_copy["claim_id"] = _scope_claim_id(
+                    base_claim_id,
+                    contact_id=contact_id,
+                    interaction_id=interaction.interaction_id,
+                )
                 claim_copy["evidence_refs"] = [
                     {
                         "interaction_id": interaction.interaction_id,
@@ -408,10 +450,21 @@ def process_interaction(interaction_id: str) -> None:
                 ]
                 prepared_candidates.append(claim_copy)
 
+            if prepared_candidates:
+                write_claims_with_evidence(contact_id, interaction.interaction_id, prepared_candidates, evidence_refs)
+            graph_relation_stats_cognee = _persist_relation_claims_for_contact(
+                db=db,
+                contact_id=contact_id,
+                interaction=interaction,
+                claims=prepared_candidates,
+                auto_accept_threshold=settings.auto_accept_threshold,
+            )
+
+            accepted_claims_after_cognee = get_contact_claims(contact_id, status="accepted")
             bundle = build_mem0_bundle(
                 interaction_summary=_summarize_interaction_body(body_text),
-                recent_claims=existing_claims,
-                cognee_candidates=prepared_candidates,
+                recent_claims=accepted_claims_after_cognee,
+                candidate_claims=prepared_candidates,
                 auto_accept_threshold=settings.auto_accept_threshold,
                 scope_ids={
                     "user_id": contact_id,
@@ -421,12 +474,28 @@ def process_interaction(interaction_id: str) -> None:
                     "interaction_id": interaction.interaction_id,
                 },
             )
-            ops = propose_memory_ops(bundle)
-            new_claims = _claims_from_ops(ops, evidence_refs, interaction.interaction_id)
+            try:
+                ops = propose_memory_ops(bundle)
+            except Exception:
+                logger.exception(
+                    "interaction_mem0_ops_failed",
+                    extra={
+                        "interaction_id": interaction.interaction_id,
+                        "contact_id": contact_id,
+                    },
+                )
+                ops = []
+            new_claims = _claims_from_ops(
+                ops,
+                evidence_refs,
+                interaction.interaction_id,
+                contact_id,
+            )
+            new_claims = _dedupe_claims(prepared_candidates, new_claims)
             if new_claims:
                 write_claims_with_evidence(contact_id, interaction.interaction_id, new_claims, evidence_refs)
 
-            contradictions = detect_contradictions(existing_claims, new_claims)
+            contradictions = detect_contradictions(accepted_claims_after_cognee, new_claims)
             for issue in contradictions:
                 create_resolution_task(
                     db,
@@ -441,13 +510,18 @@ def process_interaction(interaction_id: str) -> None:
                     },
                 )
 
-            graph_relation_stats = _persist_relation_claims_for_contact(
+            graph_relation_stats_mem0 = _persist_relation_claims_for_contact(
                 db=db,
                 contact_id=contact_id,
                 interaction=interaction,
-                claims=prepared_candidates + new_claims,
+                claims=new_claims,
                 auto_accept_threshold=settings.auto_accept_threshold,
             )
+            graph_relation_stats = _merge_relation_stats(graph_relation_stats_cognee, graph_relation_stats_mem0)
+            graph_relation_stats["by_stage"] = {
+                "cognee": graph_relation_stats_cognee,
+                "mem0": graph_relation_stats_mem0,
+            }
 
             now = datetime.now(timezone.utc)
             contact_interactions = _interactions_for_contact(db, contact_id)
@@ -495,7 +569,7 @@ def process_interaction(interaction_id: str) -> None:
             warmth_for_score = warmth_delta + graph_warmth_bonus
             depth_for_score = depth_count
             if warmth_depth_meta.get("source") != "llm":
-                depth_for_score = depth_count + len(existing_claims) + len(new_claims)
+                depth_for_score = depth_count + len(accepted_claims_after_cognee) + len(new_claims)
             depth_for_score += graph_depth_bonus
             relationship, relationship_components = compute_relationship_score(
                 last_interaction_at=_as_utc(last_interaction.timestamp) if last_interaction else None,
@@ -561,6 +635,15 @@ def process_interaction(interaction_id: str) -> None:
 
         interaction.status = "processed"
         db.commit()
+    except Exception:
+        db.rollback()
+        if interaction is not None:
+            try:
+                interaction.status = "failed"
+                db.commit()
+            except Exception:
+                db.rollback()
+        raise
     finally:
         db.close()
 

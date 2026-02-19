@@ -4,58 +4,42 @@ import uuid
 from typing import Any
 
 from app.db.neo4j.queries import create_claim_with_evidence
+from app.services.ontology import map_relation_to_claim, map_topic_to_claim
 
 
 def candidates_to_claims(candidates: dict[str, Any]) -> list[dict[str, Any]]:
     claims: list[dict[str, Any]] = []
     for rel in candidates.get("relations", []):
-        claim_type = "employment" if rel.get("predicate") == "employment_change" else "topic"
-        predicate = str(rel.get("predicate") or "").strip()
-        claims.append(
-            {
-                "claim_id": str(uuid.uuid4()),
-                "claim_type": claim_type,
-                "value_json": {
-                    "subject": rel.get("subject"),
-                    "predicate": predicate or "related_to",
-                    "object": rel.get("object"),
-                    "evidence_spans": list(rel.get("evidence_spans", [])),
-                },
-                "status": "proposed",
-                "sensitive": False,
-                "valid_from": None,
-                "valid_to": None,
-                "confidence": float(rel.get("confidence", 0.5)),
-                "source_system": "cognee",
-            }
-        )
+        mapped = map_relation_to_claim(rel, source_system="cognee", default_confidence=0.5)
+        if mapped is None:
+            continue
+        if not mapped.get("claim_id"):
+            mapped["claim_id"] = str(uuid.uuid4())
+        claims.append(mapped)
 
     for topic in candidates.get("topics", [])[:5]:
-        claims.append(
-            {
-                "claim_id": str(uuid.uuid4()),
-                "claim_type": "topic",
-                "value_json": {"label": topic.get("label")},
-                "status": "proposed",
-                "sensitive": False,
-                "valid_from": None,
-                "valid_to": None,
-                "confidence": float(topic.get("confidence", 0.5)),
-                "source_system": "cognee",
-            }
-        )
+        mapped = map_topic_to_claim(topic, source_system="cognee")
+        if mapped is None:
+            continue
+        claims.append(mapped)
     return claims
 
 
 def write_claims_with_evidence(contact_id: str, interaction_id: str, claims: list[dict], evidence_refs: list[dict]) -> None:
     for claim in claims:
+        source_evidence_refs = claim.get("evidence_refs") if isinstance(claim.get("evidence_refs"), list) else evidence_refs
         claim_evidence = []
-        for ref in evidence_refs:
+        for ref in source_evidence_refs:
+            if not isinstance(ref, dict):
+                continue
+            chunk_id = ref.get("chunk_id")
+            if not chunk_id:
+                continue
             claim_evidence.append(
                 {
                     "evidence_id": str(uuid.uuid4()),
-                    "interaction_id": interaction_id,
-                    "chunk_id": ref["chunk_id"],
+                    "interaction_id": ref.get("interaction_id") or interaction_id,
+                    "chunk_id": chunk_id,
                     "span_json": ref.get("span_json", {}),
                     "quote_hash": ref.get("quote_hash", ""),
                 }

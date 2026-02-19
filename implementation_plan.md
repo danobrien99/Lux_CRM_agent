@@ -28,11 +28,11 @@ Expected behavior gate
 
 ### Step 1.2: Configure Google OAuth in n8n (start here)
 Implementation checklist
-- [ ] Create/choose Google Cloud project.
-- [ ] Enable Gmail API, Google Sheets API, and Google Drive API.
-- [ ] Configure OAuth consent screen.
-- [ ] Create OAuth client and set redirect URI: `http://localhost:5680/rest/oauth2-credential/callback`.
-- [ ] Add Gmail and Google credentials in n8n.
+- [x] Create/choose Google Cloud project.
+- [x] Enable Gmail API, Google Sheets API, and Google Drive API.
+- [x] Configure OAuth consent screen.
+- [x] Create OAuth client and set redirect URI: `http://localhost:5680/rest/oauth2-credential/callback`.
+- [x] Add Gmail and Google credentials in n8n.
 
 Testing checklist
 - [ ] n8n "Test credential" succeeds for Gmail.

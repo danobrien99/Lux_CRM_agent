@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib
 import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Any
 
 import httpx
@@ -35,8 +36,11 @@ def _normalize_ops(ops: list[dict], auto_accept_threshold: float) -> list[dict]:
 def _fallback_ops(bundle: dict) -> list[dict]:
     ops: list[dict] = []
     threshold = float(bundle.get("auto_accept_threshold", 0.9))
+    candidates = bundle.get("candidate_claims")
+    if not isinstance(candidates, list):
+        candidates = bundle.get("cognee_candidates", [])
 
-    for claim in bundle.get("cognee_candidates", []):
+    for claim in candidates:
         claim_copy = copy.deepcopy(claim)
         confidence = float(claim_copy.get("confidence", 0.0))
         if confidence >= threshold:
@@ -68,13 +72,29 @@ def _propose_via_local_module(bundle: dict) -> list[dict] | None:
         )
         return None
 
+    def _invoke() -> Any:
+        try:
+            return proposer(bundle=bundle)
+        except TypeError:
+            return proposer(bundle)
+
+    executor = ThreadPoolExecutor(max_workers=1)
     try:
-        result = proposer(bundle=bundle)
-    except TypeError:
-        result = proposer(bundle)
+        future = executor.submit(_invoke)
+        try:
+            result = future.result(timeout=float(settings.mem0_local_timeout_seconds))
+        except FutureTimeoutError:
+            logger.error(
+                "mem0_local_execution_timeout",
+                extra={"timeout_seconds": settings.mem0_local_timeout_seconds},
+            )
+            future.cancel()
+            return None
     except Exception:
         logger.exception("mem0_local_execution_failed")
         return None
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
     if not isinstance(result, list):
         logger.error("mem0_local_invalid_result_type", extra={"type": type(result).__name__})

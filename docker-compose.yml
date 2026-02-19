@@ -1,14 +1,21 @@
+x-api-build: &api-build
+  context: .
+  dockerfile: apps/api/Dockerfile
+
 services:
   api:
-    image: python:3.11-slim
+    image: lux-crm-agent-api:local
+    build: *api-build
     working_dir: /workspace/apps/api
-    command: bash -lc "pip install -e . && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     env_file:
       - .env
     environment:
       NEO4J_URI: ${NEO4J_URI:-neo4j://neo4j:7687}
       NEO4J_USER: ${NEO4J_USER:-neo4j}
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme}
+      COGNEE_REPO_PATH: ${COGNEE_REPO_PATH:-/workspace/Third_Party/cognee}
+      MEM0_REPO_PATH: ${MEM0_REPO_PATH:-/workspace/Third_Party/mem0}
     volumes:
       - .:/workspace
     ports:
@@ -16,22 +23,26 @@ services:
     depends_on:
       - redis
       - neo4j
+    restart: unless-stopped
 
   worker:
-    image: python:3.11-slim
+    image: lux-crm-agent-api:local
     working_dir: /workspace/apps/api
-    command: bash -lc "pip install -e . && rq worker --url ${REDIS_URL:-redis://redis:6379/0}"
+    command: rq worker --url ${REDIS_URL:-redis://redis:6379/0}
     env_file:
       - .env
     environment:
       NEO4J_URI: ${NEO4J_URI:-neo4j://neo4j:7687}
       NEO4J_USER: ${NEO4J_USER:-neo4j}
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme}
+      COGNEE_REPO_PATH: ${COGNEE_REPO_PATH:-/workspace/Third_Party/cognee}
+      MEM0_REPO_PATH: ${MEM0_REPO_PATH:-/workspace/Third_Party/mem0}
     volumes:
       - .:/workspace
     depends_on:
       - redis
       - neo4j
+    restart: unless-stopped
 
   neo4j:
     image: neo4j:5.26-community
@@ -59,22 +70,31 @@ services:
       - "$N8N_PORT:5680"
     volumes:
       - ./n8n:/home/node/.n8n
+    restart: unless-stopped
 
   ui:
     image: node:20-alpine
     working_dir: /workspace/apps/ui
-    command: sh -lc "rm -rf .next && npm install && npm run dev"
+    command: sh -lc "mkdir -p .next && find .next -mindepth 1 -maxdepth 1 -exec rm -rf {} + && npm install && npm run dev"
     env_file:
       - .env
     volumes:
       - .:/workspace
+      - ui_node_modules:/workspace/apps/ui/node_modules
+      - ui_next:/workspace/apps/ui/.next
     ports:
       - "3000:3000"
     depends_on:
       - api
+      - worker
+      - n8n
 
 volumes:
   neo4j_data:
     name: lux_crm_agent_neo4j_data_isolated
   neo4j_logs:
     name: lux_crm_agent_neo4j_logs_isolated
+  ui_node_modules:
+    name: lux_crm_agent_ui_node_modules
+  ui_next:
+    name: lux_crm_agent_ui_next

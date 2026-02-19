@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     cognee_search_type: str = "GRAPH_COMPLETION"
     cognee_search_top_k: int = 8
     cognee_enable_heuristic_fallback: bool = False
+    cognee_local_timeout_seconds: int = Field(default=120, ge=5, le=900)
 
     mem0_backend: str = "local"
     mem0_local_module: str = "app.integrations.mem0_oss_adapter"
@@ -54,6 +55,8 @@ class Settings(BaseSettings):
     mem0_agent_id: str = "lux_crm_agent"
     mem0_search_limit: int = 25
     mem0_enable_rules_fallback: bool = False
+    mem0_local_timeout_seconds: int = Field(default=120, ge=5, le=900)
+    ontology_config_path: str = "app/services/ontology/ontology_config.json"
 
     data_cleanup_enabled: bool = True
     data_cleanup_schedule_cron: str = "0 3 * * *"

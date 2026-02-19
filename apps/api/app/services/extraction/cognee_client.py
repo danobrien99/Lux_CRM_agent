@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Any
 
 import httpx
@@ -66,14 +67,33 @@ def _extract_via_local_module(interaction_id: str, text: str) -> dict[str, Any] 
         )
         return None
 
+    def _invoke() -> Any:
+        try:
+            return extractor(interaction_id=interaction_id, text=text)
+        except TypeError:
+            # Support adapters that use positional args.
+            return extractor(interaction_id, text)
+
+    executor = ThreadPoolExecutor(max_workers=1)
     try:
-        result = extractor(interaction_id=interaction_id, text=text)
-    except TypeError:
-        # Support adapters that use positional args.
-        result = extractor(interaction_id, text)
+        future = executor.submit(_invoke)
+        try:
+            result = future.result(timeout=float(settings.cognee_local_timeout_seconds))
+        except FutureTimeoutError:
+            logger.error(
+                "cognee_local_execution_timeout",
+                extra={
+                    "timeout_seconds": settings.cognee_local_timeout_seconds,
+                    "interaction_id": interaction_id,
+                },
+            )
+            future.cancel()
+            return None
     except Exception:
         logger.exception("cognee_local_execution_failed")
         return None
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
     if not isinstance(result, dict):
         logger.error("cognee_local_invalid_result_type", extra={"type": type(result).__name__})
