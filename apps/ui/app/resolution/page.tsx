@@ -1,15 +1,7 @@
 import { apiGet } from "@/lib/api";
+import { ResolutionQueue, type ResolutionTask } from "@/components/resolution-queue";
 
-type Task = {
-  task_id: string;
-  contact_id: string;
-  task_type: string;
-  status: string;
-};
-
-type TaskResponse = {
-  tasks: Task[];
-};
+type TaskResponse = { tasks: ResolutionTask[] };
 
 async function getTasks(): Promise<TaskResponse | null> {
   try {
@@ -19,22 +11,14 @@ async function getTasks(): Promise<TaskResponse | null> {
   }
 }
 
-export default async function ResolutionPage() {
+export default async function ResolutionPage({ searchParams }: { searchParams?: { contactId?: string } }) {
   const data = await getTasks();
 
   return (
     <section>
       <h1 className="sectionTitle">Resolution Queue</h1>
       {!data && <p className="muted">Unable to load tasks.</p>}
-      {data && data.tasks.length === 0 && <p className="muted">No open tasks.</p>}
-      {data?.tasks.map((task) => (
-        <article className="card" key={task.task_id}>
-          <p className="label">Task</p>
-          <p className="value">{task.task_type}</p>
-          <p>Contact: {task.contact_id || "unresolved"}</p>
-          <p>Status: {task.status}</p>
-        </article>
-      ))}
+      {data && <ResolutionQueue initialTasks={data.tasks} focusContactId={searchParams?.contactId ?? null} />}
     </section>
   );
 }

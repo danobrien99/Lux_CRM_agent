@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from app.services.drafting import composer
+from app.services.drafting.citations import build_citations_from_bundle
 from app.services.drafting.composer import compose_draft, compose_subject
 from app.services.drafting.tone import resolve_tone_band
 
@@ -117,3 +118,37 @@ def test_compose_subject_uses_recent_subject() -> None:
     subject = compose_subject(bundle, {"tone_band": "cool_professional"})
     assert subject.startswith("Follow-up:")
     assert "Q1 planning" in subject
+
+
+def test_build_citations_maps_paragraphs_to_supporting_chunks() -> None:
+    bundle = {
+        "relevant_chunks": [
+            {
+                "interaction_id": "i-1",
+                "chunk_id": "c-1",
+                "span_json": {"start": 0, "end": 40},
+                "text": "pricing proposal and budget discussion for Q2 pilot",
+            },
+            {
+                "interaction_id": "i-2",
+                "chunk_id": "c-2",
+                "span_json": {"start": 41, "end": 80},
+                "text": "timeline confirmation and workshop date options",
+            },
+        ]
+    }
+    draft_text = (
+        "Hi Alex,\n\n"
+        "Following up on the pricing proposal and budget discussion for the Q2 pilot.\n\n"
+        "Could we confirm a workshop date and timeline next week?\n\n"
+        "Best,\n[Your Name]"
+    )
+
+    citations = build_citations_from_bundle(bundle, draft_text=draft_text)
+
+    paragraph_ids = {item["paragraph"] for item in citations}
+    assert 2 in paragraph_ids
+    assert 3 in paragraph_ids
+    assert 4 not in paragraph_ids  # closer should not get arbitrary citations
+    assert any(item["chunk_id"] == "c-1" and item["paragraph"] == 2 for item in citations)
+    assert any(item["chunk_id"] == "c-2" and item["paragraph"] == 3 for item in citations)

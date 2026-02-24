@@ -36,7 +36,7 @@ from app.db.neo4j.queries import (
     upsert_contact_company_relation,
     upsert_relation_triple,
 )
-from app.db.pg.models import Chunk, ContactCache, Draft, Interaction, RawEvent
+from app.db.pg.models import Chunk, ContactCache, Draft, Interaction, RawEvent, ResolutionTask
 from app.db.pg.session import SessionLocal
 from app.services.chunking.chunk_email import chunk_email_text
 from app.services.chunking.chunk_transcript import chunk_transcript_text
@@ -87,6 +87,8 @@ _PERSISTABLE_GRAPH_CLAIM_TYPES = {
     "family",
     "education",
     "location",
+    "topic",
+    "relationship_signal",
 }
 _CASE_OPPORTUNITY_CLAIM_TYPES = {"opportunity", "commitment"}
 _OPPORTUNITY_SUBJECT_KEYWORDS = {
@@ -112,32 +114,163 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def _resolve_contact_ids(db, participants_json: dict) -> tuple[list[str], list[str], dict[str, str], dict[str, str]]:
+def _person_name_key(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", _normalized_text(value).lower()).strip()
+
+
+def _person_name_tokens(value: object) -> list[str]:
+    return [tok for tok in _person_name_key(value).split(" ") if tok]
+
+
+def _resolve_contact_ids(
+    db, participants_json: dict
+) -> tuple[list[str], list[str], dict[str, str], dict[str, str], dict[str, dict[str, Any]], list[dict[str, Any]]]:
     emails: list[str] = []
     display_names_by_email: dict[str, str] = {}
     internal_names_by_email: dict[str, str] = {}
+    speaker_names_no_email: list[str] = []
     for bucket in ("from", "to", "cc"):
         for item in participants_json.get(bucket, []):
             email = (item.get("email") or "").lower()
+            name_value = _normalized_text(item.get("name"))
             if email:
                 emails.append(email)
-                name_value = _normalized_text(item.get("name"))
                 if is_internal_email(email):
                     if name_value and email not in internal_names_by_email:
                         internal_names_by_email[email] = name_value
                     continue
                 if name_value and email not in display_names_by_email:
                     display_names_by_email[email] = name_value
-
-    if not emails:
-        return [], [], {}, {}
+            elif name_value:
+                speaker_names_no_email.append(name_value)
 
     unique_emails = sorted(set(emails))
-    contacts = db.scalars(select(ContactCache).where(ContactCache.primary_email.in_(unique_emails))).all()
+    contacts: list[ContactCache] = []
+    if unique_emails:
+        contacts = db.scalars(select(ContactCache).where(ContactCache.primary_email.in_(unique_emails))).all()
     matched_ids = sorted({c.contact_id for c in contacts if not is_internal_email(c.primary_email)})
     matched_emails = {c.primary_email.lower() for c in contacts if not is_internal_email(c.primary_email)}
     unresolved_emails = [email for email in unique_emails if email not in matched_emails and not is_internal_email(email)]
-    return matched_ids, unresolved_emails, display_names_by_email, internal_names_by_email
+
+    name_match_provenance: dict[str, dict[str, Any]] = {}
+    speaker_resolution_suggestions: list[dict[str, Any]] = []
+    if speaker_names_no_email:
+        all_contacts = db.scalars(select(ContactCache)).all()
+        by_exact_name: dict[str, list[ContactCache]] = {}
+        by_token_signature: dict[str, list[ContactCache]] = {}
+        for contact in all_contacts:
+            if is_internal_email(contact.primary_email):
+                continue
+            name_key = _person_name_key(contact.display_name)
+            if name_key:
+                by_exact_name.setdefault(name_key, []).append(contact)
+            tokens = _person_name_tokens(contact.display_name)
+            if len(tokens) >= 2:
+                token_sig = f"{tokens[0]}|{tokens[-1]}"
+                by_token_signature.setdefault(token_sig, []).append(contact)
+
+        for speaker_name in sorted(set(speaker_names_no_email)):
+            name_key = _person_name_key(speaker_name)
+            tokens = _person_name_tokens(speaker_name)
+            candidates = by_exact_name.get(name_key, []) if name_key else []
+            provenance = None
+            if len(candidates) == 1:
+                matched_ids = sorted(set(matched_ids + [candidates[0].contact_id]))
+                provenance = {
+                    "match_method": "name_exact",
+                    "speaker_name": speaker_name,
+                    "contact_id": candidates[0].contact_id,
+                    "confidence": 0.95,
+                }
+                name_match_provenance[candidates[0].contact_id] = provenance
+                continue
+
+            if len(tokens) >= 2:
+                token_sig = f"{tokens[0]}|{tokens[-1]}"
+                token_candidates = by_token_signature.get(token_sig, [])
+                if len(token_candidates) == 1:
+                    matched_ids = sorted(set(matched_ids + [token_candidates[0].contact_id]))
+                    provenance = {
+                        "match_method": "name_first_last_unique",
+                        "speaker_name": speaker_name,
+                        "contact_id": token_candidates[0].contact_id,
+                        "confidence": 0.75,
+                    }
+                    name_match_provenance[token_candidates[0].contact_id] = provenance
+                    continue
+                if token_candidates:
+                    speaker_resolution_suggestions.append(
+                        {
+                            "speaker_name": speaker_name,
+                            "match_method": "name_ambiguous",
+                            "candidates": [
+                                {
+                                    "contact_id": candidate.contact_id,
+                                    "display_name": candidate.display_name,
+                                    "primary_email": candidate.primary_email,
+                                    "confidence": 0.55,
+                                }
+                                for candidate in token_candidates[:5]
+                            ],
+                        }
+                    )
+                    continue
+
+            speaker_resolution_suggestions.append(
+                {
+                    "speaker_name": speaker_name,
+                    "match_method": "name_no_match",
+                    "candidates": [],
+                }
+            )
+
+    return (
+        matched_ids,
+        unresolved_emails,
+        display_names_by_email,
+        internal_names_by_email,
+        name_match_provenance,
+        speaker_resolution_suggestions,
+    )
+
+
+def _enqueue_speaker_resolution_tasks(db, interaction: Interaction, speaker_resolution_suggestions: list[dict[str, Any]]) -> int:
+    created = 0
+    for speaker in speaker_resolution_suggestions:
+        speaker_name = _normalized_text(speaker.get("speaker_name"))
+        if not speaker_name:
+            continue
+        proposed_claim_id = f"speaker_identity:{interaction.interaction_id}:{_normalized_compact(speaker_name).replace(' ', '_')}"
+        existing_task = db.scalar(
+            select(ResolutionTask).where(
+                ResolutionTask.proposed_claim_id == proposed_claim_id,
+                ResolutionTask.status == "open",
+            )
+        )
+        if existing_task is not None:
+            continue
+        create_resolution_task(
+            db,
+            contact_id="",
+            task_type="speaker_identity_resolution",
+            proposed_claim_id=proposed_claim_id,
+            current_claim_id=None,
+            payload_json={
+                "interaction_id": interaction.interaction_id,
+                "speaker_name": speaker_name,
+                "match_method": speaker.get("match_method"),
+                "candidates": speaker.get("candidates") or [],
+                "entity_status": "provisional",
+                "promotion_reason": "speaker_name_only_unresolved",
+                "gate_results": {
+                    "source_system": interaction.source_system,
+                    "match_method": speaker.get("match_method"),
+                    "candidate_count": len(speaker.get("candidates") or []),
+                },
+            },
+        )
+        created += 1
+    return created
 
 
 def _interaction_contact_hint(raw_payload_json: dict | None) -> dict[str, str | None]:
@@ -353,6 +486,79 @@ def _claim_value_text(claim: dict[str, Any]) -> str:
     )
 
 
+def _chunk_evidence_ref(interaction_id: str, chunk: Chunk) -> dict[str, Any]:
+    return {
+        "interaction_id": interaction_id,
+        "chunk_id": chunk.chunk_id,
+        "span_json": chunk.span_json,
+        "quote_hash": f"{chunk.chunk_id}:{len(chunk.text)}",
+    }
+
+
+def _claim_evidence_refs_for_chunks(
+    claim: dict[str, Any],
+    *,
+    interaction_id: str,
+    chunks: list[Chunk],
+    default_limit: int = 2,
+) -> list[dict[str, Any]]:
+    if not chunks:
+        return []
+    value_json = claim.get("value_json") if isinstance(claim.get("value_json"), dict) else {}
+    evidence_spans = value_json.get("evidence_spans") if isinstance(value_json.get("evidence_spans"), list) else []
+
+    matched: list[Chunk] = []
+    for chunk in chunks:
+        chunk_span = chunk.span_json if isinstance(chunk.span_json, dict) else {}
+        chunk_start = chunk_span.get("start")
+        chunk_end = chunk_span.get("end")
+        if not isinstance(chunk_start, int) or not isinstance(chunk_end, int):
+            continue
+        for span in evidence_spans:
+            if not isinstance(span, dict):
+                continue
+            span_start = span.get("start")
+            span_end = span.get("end")
+            if not isinstance(span_start, int) or not isinstance(span_end, int):
+                continue
+            if max(chunk_start, span_start) < min(chunk_end, span_end):
+                matched.append(chunk)
+                break
+
+    if not matched:
+        target_text = _normalized_compact(
+            _claim_value_text(claim)
+            or value_json.get("object")
+            or value_json.get("label")
+            or value_json.get("predicate")
+        )
+        target_terms = {tok for tok in target_text.split(" ") if tok and len(tok) >= 3}
+        if target_terms:
+            scored: list[tuple[int, Chunk]] = []
+            for chunk in chunks[:8]:
+                chunk_terms = {tok for tok in _normalized_compact(chunk.text).split(" ") if tok}
+                overlap = len(target_terms & chunk_terms)
+                if overlap <= 0:
+                    continue
+                scored.append((overlap, chunk))
+            scored.sort(key=lambda item: (-item[0], item[1].chunk_id))
+            matched = [chunk for _, chunk in scored[: max(1, default_limit)]]
+
+    if not matched:
+        matched = chunks[: max(1, default_limit)]
+
+    refs: list[dict[str, Any]] = []
+    seen_chunk_ids: set[str] = set()
+    for chunk in matched:
+        if chunk.chunk_id in seen_chunk_ids:
+            continue
+        seen_chunk_ids.add(chunk.chunk_id)
+        refs.append(_chunk_evidence_ref(interaction_id, chunk))
+        if len(refs) >= max(1, default_limit):
+            break
+    return refs
+
+
 def _is_low_signal_text(value: object) -> bool:
     text = _normalized_text(value)
     if not text:
@@ -407,6 +613,57 @@ def _filter_graph_claims(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _filter_crm_promotable_claims(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [claim for claim in claims if isinstance(claim, dict) and _is_crm_promotable_claim(claim)]
+
+
+def _split_claim_pipelines(claims: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    graph_context_claims = _filter_graph_claims(claims)
+    crm_promotable_claims = _filter_crm_promotable_claims(graph_context_claims)
+    return graph_context_claims, crm_promotable_claims
+
+
+def _claim_evidence_refs(claim: dict[str, Any], *, max_refs: int = 4) -> list[dict[str, Any]]:
+    refs = claim.get("evidence_refs")
+    if not isinstance(refs, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        result.append(
+            {
+                "interaction_id": ref.get("interaction_id"),
+                "chunk_id": ref.get("chunk_id"),
+                "span_json": ref.get("span_json"),
+            }
+        )
+        if len(result) >= max(1, max_refs):
+            break
+    return result
+
+
+def _contradiction_task_payload(issue: dict[str, Any], *, interaction_id: str) -> dict[str, Any]:
+    current_claim = issue.get("current_claim") if isinstance(issue.get("current_claim"), dict) else {}
+    proposed_claim = issue.get("proposed_claim") if isinstance(issue.get("proposed_claim"), dict) else {}
+    task_type = _normalized_text(issue.get("task_type")) or "claim_discrepancy"
+    current_type = _normalized_text(current_claim.get("claim_type")) or "claim"
+    proposed_type = _normalized_text(proposed_claim.get("claim_type")) or "claim"
+    current_value = current_claim.get("value_json") if isinstance(current_claim.get("value_json"), dict) else {}
+    proposed_value = proposed_claim.get("value_json") if isinstance(proposed_claim.get("value_json"), dict) else {}
+    summary = (
+        f"{task_type}: {current_type} changed from "
+        f"{_normalized_text(current_value.get('object') or current_value.get('company') or current_value.get('label') or current_value)} "
+        f"to {_normalized_text(proposed_value.get('object') or proposed_value.get('company') or proposed_value.get('label') or proposed_value)}"
+    ).strip()
+    return {
+        "summary": summary,
+        "current_claim": current_claim,
+        "proposed_claim": proposed_claim,
+        "interaction_id": interaction_id,
+        "evidence_refs": {
+            "current": _claim_evidence_refs(current_claim),
+            "proposed": _claim_evidence_refs(proposed_claim),
+        },
+    }
 
 
 def _claim_identity(claim: dict[str, object]) -> tuple[str, str]:
@@ -701,9 +958,23 @@ def process_interaction(interaction_id: str) -> None:
                 hint_display_name=hint.get("display_name"),
             )
 
-        contact_ids, unresolved_emails, participant_names, internal_participant_names = _resolve_contact_ids(
+        (
+            contact_ids,
+            unresolved_emails,
+            participant_names,
+            internal_participant_names,
+            name_match_provenance,
+            speaker_resolution_suggestions,
+        ) = _resolve_contact_ids(
             db, interaction.participants_json
         )
+        if name_match_provenance or speaker_resolution_suggestions:
+            participants_payload = dict(interaction.participants_json or {})
+            participants_payload["match_provenance"] = {
+                "contact_matches": name_match_provenance,
+                "speaker_resolution_suggestions": speaker_resolution_suggestions,
+            }
+            interaction.participants_json = participants_payload
         hinted_contact_id = hinted_contact.contact_id if hinted_contact else (_normalized_text(hint.get("contact_id")) or None)
         hinted_email = _normalized_text(hint.get("primary_email")).lower() or None
         if hinted_contact_id and hinted_contact_id not in contact_ids:
@@ -832,6 +1103,8 @@ def process_interaction(interaction_id: str) -> None:
                     if participant_names.get(email):
                         existing_cache.display_name = participant_names.get(email)
 
+        _enqueue_speaker_resolution_tasks(db, interaction, speaker_resolution_suggestions)
+
         all_contact_ids = sorted(set(contact_ids + provisional_contact_ids))
         interaction.contact_ids_json = all_contact_ids
         for contact_id in all_contact_ids:
@@ -881,18 +1154,9 @@ def process_interaction(interaction_id: str) -> None:
             )
             raise RuntimeError(f"Cognee extraction failed for interaction {interaction.interaction_id}") from exc
         proposed_claims = candidates_to_claims(candidates)
-        graph_claim_candidates = _filter_graph_claims(proposed_claims)
-        crm_promotable_claim_candidates = _filter_crm_promotable_claims(graph_claim_candidates)
+        graph_claim_candidates, crm_promotable_claim_candidates = _split_claim_pipelines(proposed_claims)
 
-        evidence_refs = [
-            {
-                "interaction_id": interaction.interaction_id,
-                "chunk_id": c.chunk_id,
-                "span_json": c.span_json,
-                "quote_hash": f"{c.chunk_id}:{len(c.text)}",
-            }
-            for c in chunks[:3]
-        ]
+        evidence_refs = [_chunk_evidence_ref(interaction.interaction_id, c) for c in chunks[:3]]
 
         if settings.graph_v2_enabled:
             company_hint = _extract_company_hint_from_claims(crm_promotable_claim_candidates)
@@ -954,9 +1218,14 @@ def process_interaction(interaction_id: str) -> None:
                     {
                         "interaction_id": interaction.interaction_id,
                         "chunk_id": ref["chunk_id"],
-                        "span_json": ref["span_json"],
+                        "span_json": ref.get("span_json", {}),
                     }
-                    for ref in evidence_refs
+                    for ref in _claim_evidence_refs_for_chunks(
+                        claim_copy,
+                        interaction_id=interaction.interaction_id,
+                        chunks=chunks,
+                        default_limit=2,
+                    )
                 ]
                 prepared_candidates.append(claim_copy)
 
@@ -983,7 +1252,9 @@ def process_interaction(interaction_id: str) -> None:
                         interaction_id=interaction.interaction_id,
                         contact_id=contact_id,
                         claim=claim,
-                        evidence_refs=evidence_refs,
+                        evidence_refs=(
+                            claim.get("evidence_refs") if isinstance(claim.get("evidence_refs"), list) and claim.get("evidence_refs") else evidence_refs
+                        ),
                         source_system="cognee",
                         extractor="cognee",
                         entity_status="provisional",
@@ -1043,8 +1314,7 @@ def process_interaction(interaction_id: str) -> None:
                 contact_id,
             )
             new_claims = _dedupe_claims(prepared_candidates, new_claims)
-            new_claims = _filter_graph_claims(new_claims)
-            new_claims_crm_promotable = _filter_crm_promotable_claims(new_claims)
+            new_claims, new_claims_crm_promotable = _split_claim_pipelines(new_claims)
             if new_claims and evidence_refs:
                 write_claims_with_evidence(contact_id, interaction.interaction_id, new_claims, evidence_refs)
                 for claim in new_claims:
@@ -1052,7 +1322,9 @@ def process_interaction(interaction_id: str) -> None:
                         interaction_id=interaction.interaction_id,
                         contact_id=contact_id,
                         claim=claim,
-                        evidence_refs=evidence_refs,
+                        evidence_refs=(
+                            claim.get("evidence_refs") if isinstance(claim.get("evidence_refs"), list) and claim.get("evidence_refs") else evidence_refs
+                        ),
                         source_system="mem0",
                         extractor="mem0",
                         entity_status="provisional",
@@ -1064,17 +1336,24 @@ def process_interaction(interaction_id: str) -> None:
 
             contradictions = detect_contradictions(accepted_claims_after_cognee, new_claims)
             for issue in contradictions:
+                existing_conflict_task = db.scalar(
+                    select(ResolutionTask).where(
+                        ResolutionTask.status == "open",
+                        ResolutionTask.task_type == issue["task_type"],
+                        ResolutionTask.contact_id == contact_id,
+                        ResolutionTask.proposed_claim_id == issue["proposed_claim"]["claim_id"],
+                        ResolutionTask.current_claim_id == issue["current_claim"]["claim_id"],
+                    )
+                )
+                if existing_conflict_task is not None:
+                    continue
                 create_resolution_task(
                     db,
                     contact_id=contact_id,
                     task_type=issue["task_type"],
                     proposed_claim_id=issue["proposed_claim"]["claim_id"],
                     current_claim_id=issue["current_claim"]["claim_id"],
-                    payload_json={
-                        "current_claim": issue["current_claim"],
-                        "proposed_claim": issue["proposed_claim"],
-                        "interaction_id": interaction.interaction_id,
-                    },
+                    payload_json=_contradiction_task_payload(issue, interaction_id=interaction.interaction_id),
                 )
 
             graph_relation_stats_mem0 = _persist_relation_claims_for_contact(

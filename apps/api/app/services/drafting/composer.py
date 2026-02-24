@@ -125,6 +125,7 @@ def _compose_openai_draft(bundle: dict, tone: dict) -> str | None:
         "objective": bundle.get("objective") or "check in",
         "retrieval_asof": bundle.get("retrieval_asof"),
         "tone_band": tone.get("tone_band"),
+        "policy_flags": bundle.get("policy_flags") or {},
         "recent_interactions": (bundle.get("recent_interactions") or [])[:3],
         "recent_interactions_global": (bundle.get("recent_interactions_global") or [])[:5],
         "opportunity_thread": bundle.get("opportunity_thread"),
@@ -137,6 +138,7 @@ def _compose_openai_draft(bundle: dict, tone: dict) -> str | None:
         "graph_paths": (bundle.get("graph_paths") or [])[:5],
         "graph_metrics": bundle.get("graph_metrics") or {},
         "assertion_evidence_trace": (bundle.get("assertion_evidence_trace") or [])[:10],
+        "internal_assertion_evidence_trace": (bundle.get("internal_assertion_evidence_trace") or [])[:8],
         "email_context_snippets": (bundle.get("email_context_snippets") or [])[:4],
     }
     style_instructions = load_combined_writing_style_instructions(tone.get("tone_band"))

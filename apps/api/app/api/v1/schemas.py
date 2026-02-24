@@ -115,6 +115,38 @@ class ContactProfile(BaseModel):
     company: str | None = None
 
 
+class NextStepSuggestion(BaseModel):
+    summary: str
+    type: str
+    source: str
+    confidence: float = 0.0
+    contact_id: str | None = None
+    opportunity_id: str | None = None
+    case_id: str | None = None
+    evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ContactInteractionTimelineItem(BaseModel):
+    interaction_id: str
+    timestamp: datetime
+    direction: str | None = None
+    subject: str | None = None
+    thread_id: str | None = None
+    source_system: str | None = None
+
+
+class ContactClaimSummaryItem(BaseModel):
+    claim_id: str
+    claim_type: str
+    predicate: str | None = None
+    object_name: str | None = None
+    status: str
+    confidence: float
+    sensitive: bool = False
+    evidence_count: int = 0
+    updated_at: str | None = None
+
+
 class InteractionSummary(BaseModel):
     total_interactions: int
     interaction_count_30d: int
@@ -126,6 +158,7 @@ class InteractionSummary(BaseModel):
     recent_subjects: list[str] = Field(default_factory=list)
     recent_topics: list[str] = Field(default_factory=list)
     priority_next_step: str | None = None
+    next_step: NextStepSuggestion | None = None
     summary_source: str | None = None
     priority_next_step_source: str | None = None
     brief: str
@@ -150,6 +183,9 @@ class ContactScoreDetailResponse(BaseModel):
     score_components: ScoreComponentBreakdown | None = None
     trend: list[ScoreTrendPoint] = Field(default_factory=list)
     current: ContactScoreItem | None = None
+    recent_interactions: list[ContactInteractionTimelineItem] = Field(default_factory=list)
+    claims_summary: list[ContactClaimSummaryItem] = Field(default_factory=list)
+    review_summary: ContactReviewSummary | None = None
 
 
 class InteractionSummaryRefreshResponse(BaseModel):
@@ -162,6 +198,8 @@ class DraftRequest(BaseModel):
     contact_id: str
     objective: str | None = None
     allow_sensitive: bool = False
+    allow_uncertain_context: bool = False
+    allow_proposed_changes_in_external_text: bool = False
     overwrite_draft_id: str | None = None
 
 
@@ -216,6 +254,13 @@ class ResolutionTaskListResponse(BaseModel):
     tasks: list[ResolutionTaskItem]
 
 
+class ContactReviewSummary(BaseModel):
+    open_resolution_task_count: int = 0
+    open_case_contact_count: int = 0
+    open_case_opportunity_count: int = 0
+    open_resolution_tasks: list[ResolutionTaskItem] = Field(default_factory=list)
+
+
 class ResolveTaskRequest(BaseModel):
     action: Literal["accept_proposed", "reject_proposed", "edit_and_accept"]
     edited_value_json: dict[str, Any] | None = None
@@ -239,6 +284,28 @@ class BackfillContactStatusResponse(BaseModel):
 
 
 EntityStatus = Literal["canonical", "provisional", "rejected"]
+
+
+class RankedOpportunityItem(BaseModel):
+    opportunity_id: str | None = None
+    case_id: str | None = None
+    title: str
+    company_name: str | None = None
+    status: str
+    entity_status: EntityStatus
+    kind: Literal["opportunity", "case_opportunity"]
+    priority_score: float
+    next_step: NextStepSuggestion | None = None
+    linked_contacts: list[ContactProfile] = Field(default_factory=list)
+    reason_chain: list[str] = Field(default_factory=list)
+    updated_at: str | None = None
+    last_engagement_at: str | None = None
+    thread_id: str | None = None
+
+
+class RankedOpportunitiesResponse(BaseModel):
+    asof: datetime
+    items: list[RankedOpportunityItem] = Field(default_factory=list)
 
 
 class CasePromotionRequest(BaseModel):

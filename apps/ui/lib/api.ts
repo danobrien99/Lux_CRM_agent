@@ -1,12 +1,22 @@
 const SERVER_API_BASE = process.env.API_BASE_INTERNAL ?? "http://api:8000/v1";
-const CLIENT_API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000/v1";
+const CLIENT_API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "/api/proxy";
 
 function getApiBase(): string {
   return typeof window === "undefined" ? SERVER_API_BASE : CLIENT_API_BASE;
 }
 
+async function safeFetch(input: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to fetch";
+    throw new Error(`${message} (${input})`);
+  }
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${getApiBase()}${path}`, { cache: "no-store" });
+  const url = `${getApiBase()}${path}`;
+  const res = await safeFetch(url, { cache: "no-store" });
   if (!res.ok) {
     throw new Error(`GET ${path} failed: ${res.status}`);
   }
@@ -14,7 +24,8 @@ export async function apiGet<T>(path: string): Promise<T> {
 }
 
 export async function apiPost<T>(path: string, payload: unknown): Promise<T> {
-  const res = await fetch(`${getApiBase()}${path}`, {
+  const url = `${getApiBase()}${path}`;
+  const res = await safeFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -26,7 +37,8 @@ export async function apiPost<T>(path: string, payload: unknown): Promise<T> {
 }
 
 export async function apiDelete<T>(path: string): Promise<T> {
-  const res = await fetch(`${getApiBase()}${path}`, {
+  const url = `${getApiBase()}${path}`;
+  const res = await safeFetch(url, {
     method: "DELETE",
   });
   if (!res.ok) {

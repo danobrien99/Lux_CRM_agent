@@ -19,6 +19,15 @@ type InteractionSummary = {
   recent_subjects: string[];
   recent_topics?: string[];
   priority_next_step?: string | null;
+  next_step?: {
+    summary: string;
+    type: string;
+    source: string;
+    confidence: number;
+    evidence_refs?: Array<Record<string, unknown>>;
+    opportunity_id?: string | null;
+    case_id?: string | null;
+  } | null;
   summary_source?: string | null;
   priority_next_step_source?: string | null;
   brief: string;
@@ -47,6 +56,37 @@ type ContactScore = {
     relationship_score: number;
     priority_score: number;
     why_now: string;
+  } | null;
+  recent_interactions?: Array<{
+    interaction_id: string;
+    timestamp: string;
+    direction?: string | null;
+    subject?: string | null;
+    thread_id?: string | null;
+    source_system?: string | null;
+  }>;
+  claims_summary?: Array<{
+    claim_id: string;
+    claim_type: string;
+    predicate?: string | null;
+    object_name?: string | null;
+    status: string;
+    confidence: number;
+    sensitive: boolean;
+    evidence_count: number;
+    updated_at?: string | null;
+  }>;
+  review_summary?: {
+    open_resolution_task_count: number;
+    open_case_contact_count: number;
+    open_case_opportunity_count: number;
+    open_resolution_tasks: Array<{
+      task_id: string;
+      task_type: string;
+      status: string;
+      proposed_claim_id: string;
+      current_claim_id?: string | null;
+    }>;
   } | null;
 };
 
@@ -236,6 +276,17 @@ export default async function ContactPage({ params }: { params: { contactId: str
                 <span className="label">Priority Next Step</span>: {data.interaction_summary.priority_next_step}
               </p>
             )}
+            {data.interaction_summary.next_step && (
+              <p className="muted">
+                Next-step source: {data.interaction_summary.next_step.source} | Confidence:{" "}
+                {data.interaction_summary.next_step.confidence.toFixed(2)} | Evidence refs:{" "}
+                {data.interaction_summary.next_step.evidence_refs?.length ?? 0}
+                {data.interaction_summary.next_step.opportunity_id
+                  ? ` | Opportunity: ${data.interaction_summary.next_step.opportunity_id}`
+                  : ""}
+                {data.interaction_summary.next_step.case_id ? ` | Case: ${data.interaction_summary.next_step.case_id}` : ""}
+              </p>
+            )}
             <div className="grid">
               <div>
                 <div className="label">Total Interactions</div>
@@ -267,6 +318,98 @@ export default async function ContactPage({ params }: { params: { contactId: str
                   ? ` | Next step source: ${data.interaction_summary.priority_next_step_source}`
                   : ""}
               </p>
+            )}
+          </>
+        )}
+      </article>
+
+      <article className="card">
+        <h2>Recent Interaction Timeline</h2>
+        {(!data.recent_interactions || data.recent_interactions.length === 0) && (
+          <p className="muted">No recent interactions available.</p>
+        )}
+        {(data.recent_interactions ?? []).map((interaction) => (
+          <article key={interaction.interaction_id}>
+            <p className="label">{interaction.timestamp}</p>
+            <p>
+              {interaction.direction || "na"} | {interaction.source_system || "unknown"}
+              {interaction.thread_id ? ` | ${interaction.thread_id}` : ""}
+            </p>
+            <p>{interaction.subject || "No subject"}</p>
+            <p className="muted">Interaction ID: {interaction.interaction_id}</p>
+          </article>
+        ))}
+      </article>
+
+      <article className="card">
+        <h2>Claims Summary</h2>
+        {(!data.claims_summary || data.claims_summary.length === 0) && (
+          <p className="muted">No claims available for this contact yet.</p>
+        )}
+        {(data.claims_summary ?? []).filter((claim) => !claim.sensitive).map((claim) => (
+          <article key={claim.claim_id}>
+            <p>
+              <span className="label">{claim.claim_type}</span>: {claim.object_name || "n/a"}
+            </p>
+            <p className="muted">
+              {claim.predicate || "predicate:n/a"} | {claim.status} | confidence {claim.confidence.toFixed(2)} | evidence {claim.evidence_count}
+            </p>
+          </article>
+        ))}
+        {(data.claims_summary ?? []).some((claim) => claim.sensitive) && (
+          <details>
+            <summary>Sensitive claims (hidden by default)</summary>
+            {(data.claims_summary ?? [])
+              .filter((claim) => claim.sensitive)
+              .map((claim) => (
+                <article key={claim.claim_id}>
+                  <p>
+                    <span className="label">{claim.claim_type}</span>: {claim.object_name || "n/a"}
+                  </p>
+                  <p className="muted">
+                    {claim.predicate || "predicate:n/a"} | {claim.status} | confidence {claim.confidence.toFixed(2)} | evidence {claim.evidence_count}
+                  </p>
+                </article>
+              ))}
+          </details>
+        )}
+      </article>
+
+      <article className="card">
+        <h2>Review / Provisional</h2>
+        {!data.review_summary && <p className="muted">No review summary available.</p>}
+        {data.review_summary && (
+          <>
+            <div className="grid">
+              <div>
+                <div className="label">Open Resolution Tasks</div>
+                <div className="value">{data.review_summary.open_resolution_task_count}</div>
+              </div>
+              <div>
+                <div className="label">Open Case Contacts</div>
+                <div className="value">{data.review_summary.open_case_contact_count}</div>
+              </div>
+              <div>
+                <div className="label">Open Case Opportunities</div>
+                <div className="value">{data.review_summary.open_case_opportunity_count}</div>
+              </div>
+            </div>
+            <div className="actionsRow">
+              <Link href={{ pathname: "/cases", query: { contactId: data.contact_id } }}>Open Cases</Link>
+              <Link href={{ pathname: "/resolution", query: { contactId: data.contact_id } }}>Open Resolution Queue</Link>
+            </div>
+            {(data.review_summary.open_resolution_tasks ?? []).length > 0 && (
+              <details>
+                <summary>Open tasks</summary>
+                {(data.review_summary.open_resolution_tasks ?? []).map((task) => (
+                  <article key={task.task_id}>
+                    <p>
+                      <span className="label">{task.task_type}</span> ({task.status})
+                    </p>
+                    <p className="muted">Task ID: {task.task_id}</p>
+                  </article>
+                ))}
+              </details>
             )}
           </>
         )}
@@ -339,6 +482,8 @@ export default async function ContactPage({ params }: { params: { contactId: str
 
       <div className="actionsRow">
         <Link href={{ pathname: "/drafts", query: { contactId: data.contact_id } }}>Generate Draft</Link>
+        <Link href={{ pathname: "/cases", query: { contactId: data.contact_id } }}>Review Cases</Link>
+        <Link href={{ pathname: "/resolution", query: { contactId: data.contact_id } }}>Resolution Queue</Link>
         <Link href="/">Back to Priority Contacts</Link>
       </div>
     </section>

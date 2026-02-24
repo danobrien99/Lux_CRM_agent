@@ -36,27 +36,34 @@ Reason: The code review attempted tests but `pytest` was unavailable. The remedi
 
 ### P0.0 Test Harness Bootstrap Checklist
 
-- [ ] Install and document local test runner prerequisites for `apps/api` (at minimum `pytest`, `pytest-cov`, and any currently missing runtime test deps).
-- [ ] Confirm `apps/api` tests run from repo docs or add a short local test command section to this plan/PR notes.
+- [x] Install and document local test runner prerequisites for `apps/api` (at minimum `pytest`, `pytest-cov`, and any currently missing runtime test deps).
+- [x] Confirm `apps/api` tests run from repo docs or add a short local test command section to this plan/PR notes.
 - [ ] Add or verify deterministic fixture generation for:
   - [ ] Contacts with multiple companies / provisional contacts
   - [ ] Interactions containing opportunity signals and commitment language
-  - [ ] News article matching scenarios
-  - [ ] Drafting evidence/citation scenarios
-  - [ ] Transcript speaker-only (name without email) scenarios
-- [ ] Add a lightweight "phase smoke" test marker set (e.g. `-m phase_smoke`) or a documented explicit test file list.
+  - [x] News article matching scenarios
+  - [x] Drafting evidence/citation scenarios
+  - [x] Transcript speaker-only (name without email) scenarios
+- [x] Add a lightweight "phase smoke" test marker set (e.g. `-m phase_smoke`) or a documented explicit test file list.
 
 ### P0.0 Testing Procedure (Must Pass Before Phase 1)
 
-- [ ] `cd apps/api && pytest -q app/tests/test_scoring.py app/tests/test_news_match.py app/tests/test_drafting.py`
-- [ ] Add and run one new smoke test proving the test environment can exercise Neo4j-query-dependent code with mocks/stubs.
-- [ ] Record exact commands and pass results in the work log / PR description.
+- [x] `cd apps/api && pytest -q app/tests/test_scoring.py app/tests/test_news_match.py app/tests/test_drafting.py`
+- [x] Add and run one new smoke test proving the test environment can exercise Neo4j-query-dependent code with mocks/stubs.
+- [x] Record exact commands and pass results in the work log / PR description.
 
 ### P0.0 Exit Gate
 
-- [ ] `pytest` runs successfully in `apps/api`.
-- [ ] All baseline smoke tests pass.
-- [ ] Fixture strategy is documented for the three remediation phases.
+- [x] `pytest` runs successfully in `apps/api`.
+- [x] All baseline smoke tests pass.
+- [x] Fixture strategy is documented for the three remediation phases.
+
+### P0.0 Execution Log (Local)
+
+- [x] `cd apps/api && .venv/bin/python -m pytest -q app/tests/test_scoring.py app/tests/test_news_match.py app/tests/test_drafting.py` -> `8 passed`
+- [x] `cd apps/api && .venv/bin/python -m pytest -q -m phase_smoke app/tests/test_phase_smoke_graph_v2_queries.py` -> `1 passed`
+- [x] `cd apps/api && .venv/bin/python -m pytest -q app/tests/test_score_routes.py app/tests/test_cases_routes.py app/tests/test_resolution_routes.py` -> pass
+- [x] `cd apps/ui && npm run build` -> pass
 
 ---
 
@@ -66,103 +73,103 @@ Goal: Align what the user sees and can act on with actual graph/case/opportunity
 
 ### Issues Addressed in This Phase
 
-- [ ] `R1` Stubbed next-step generation in `/scores`
-- [ ] `R2` Synthetic priority opportunities UI
-- [ ] `R3` Missing UI for provisional contact/opportunity review + resolution actions
+- [x] `R1` Stubbed next-step generation in `/scores`
+- [x] `R2` Synthetic priority opportunities UI
+- [x] `R3` Missing UI for provisional contact/opportunity review + resolution actions
 
 ### Workstream 1A: Replace Stub Next-Step UX in Scores/Contact Views (`R1`)
 
 #### Backend (`/scores`) checklist
 
-- [ ] Introduce a structured next-step payload for score/detail responses (example fields: `summary`, `type`, `contact_id`, `opportunity_id`, `evidence_refs`, `source`, `confidence`).
-- [ ] Remove hardcoded `_stub_priority_next_step(...)` as the primary source for user-visible next-step text.
-- [ ] Stop forcing LLM next-step output to `Stub:` prefixes.
-- [ ] Ensure the fallback path is still explicit, but clearly marked as `heuristic` (not "stub"), with evidence and confidence.
-- [ ] Derive next-step candidates from available graph/case/opportunity context first:
-  - [ ] linked open opportunity (promoted)
-  - [ ] open provisional case opportunity
-  - [ ] open inbound thread / open loops
-  - [ ] recent graph signals and commitments
-- [ ] Preserve `priority_next_step_source` only if still needed, but align values to real modes (`graph`, `heuristic`, `llm`, `case_opportunity`, `opportunity_thread`).
+- [x] Introduce a structured next-step payload for score/detail responses (example fields: `summary`, `type`, `contact_id`, `opportunity_id`, `evidence_refs`, `source`, `confidence`).
+- [x] Remove hardcoded `_stub_priority_next_step(...)` as the primary source for user-visible next-step text.
+- [x] Stop forcing LLM next-step output to `Stub:` prefixes.
+- [x] Ensure the fallback path is still explicit, but clearly marked as `heuristic` (not "stub"), with evidence and confidence.
+- [x] Derive next-step candidates from available graph/case/opportunity context first:
+  - [x] linked open opportunity (promoted)
+  - [x] open provisional case opportunity
+  - [x] open inbound thread / open loops
+  - [x] recent graph signals and commitments
+- [x] Preserve `priority_next_step_source` only if still needed, but align values to real modes (`graph`, `heuristic`, `llm`, `case_opportunity`, `opportunity_thread`).
 
 #### UI checklist
 
-- [ ] Update `/contact/[contactId]` page to display the structured next-step data (not raw stub strings).
-- [ ] Show next-step evidence summary (minimum: referenced interaction IDs / chunk IDs count).
-- [ ] Display fallback mode when the next step is heuristic.
+- [x] Update `/contact/[contactId]` page to display the structured next-step data (not raw stub strings).
+- [x] Show next-step evidence summary (minimum: referenced interaction IDs / chunk IDs count).
+- [x] Display fallback mode when the next step is heuristic.
 
 ### Workstream 1B: Replace Synthetic "Priority Opportunities" with Real Data (`R2`)
 
 #### Backend checklist
 
-- [ ] Create a real opportunity ranking endpoint for the homepage (recommended: `GET /v1/scores/opportunities` or `GET /v1/cases/opportunities/ranked`).
-- [ ] Rank using real graph entities (`CRMOpportunity` and/or `CaseOpportunity`) instead of company-grouped contacts.
-- [ ] Include fields required for UI cards:
-  - [ ] `opportunity_id` / `case_id`
-  - [ ] `title`
-  - [ ] `company_name`
-  - [ ] `status` and `entity_status`
-  - [ ] `priority_score`
-  - [ ] `next_step`
-  - [ ] `linked_contacts`
-  - [ ] `reason_chain` / explainability
-- [ ] Include time-aware weighting in ranking inputs (recent engagement recency, recent signals, stale penalty).
-- [ ] Provide stable sorting and deterministic tie-breakers.
+- [x] Create a real opportunity ranking endpoint for the homepage (recommended: `GET /v1/scores/opportunities` or `GET /v1/cases/opportunities/ranked`).
+- [x] Rank using real graph entities (`CRMOpportunity` and/or `CaseOpportunity`) instead of company-grouped contacts.
+- [x] Include fields required for UI cards:
+  - [x] `opportunity_id` / `case_id`
+  - [x] `title`
+  - [x] `company_name`
+  - [x] `status` and `entity_status`
+  - [x] `priority_score`
+  - [x] `next_step`
+  - [x] `linked_contacts`
+  - [x] `reason_chain` / explainability
+- [x] Include time-aware weighting in ranking inputs (recent engagement recency, recent signals, stale penalty).
+- [x] Provide stable sorting and deterministic tie-breakers.
 
 #### UI checklist
 
-- [ ] Refactor `/components/priority-opportunities.tsx` to consume real opportunity/case API payloads.
-- [ ] Remove synthetic value/likelihood/stage derivation based on contact scores.
-- [ ] Render promoted opportunities and provisional case opportunities distinctly (badge/label).
-- [ ] Add links from opportunity cards to relevant contact pages and provisional review actions.
-- [ ] Preserve pagination/filtering UX, but based on real fields.
+- [x] Refactor `/components/priority-opportunities.tsx` to consume real opportunity/case API payloads.
+- [x] Remove synthetic value/likelihood/stage derivation based on contact scores.
+- [x] Render promoted opportunities and provisional case opportunities distinctly (badge/label).
+- [x] Add links from opportunity cards to relevant contact pages and provisional review actions.
+- [x] Preserve pagination/filtering UX, but based on real fields.
 
 ### Workstream 1C: Expose Provisional Review and Promotion Workflows in UI (`R3`)
 
 #### Cases UI checklist
 
-- [ ] Add a new `/cases` page (or split `/cases/contacts` and `/cases/opportunities`) in Next.js.
-- [ ] Add nav link in `TopNav`.
-- [ ] Display provisional contacts from `GET /v1/cases/contacts`.
-- [ ] Display provisional opportunities from `GET /v1/cases/opportunities`.
-- [ ] Add promote actions:
-  - [ ] `POST /v1/cases/contacts/{case_id}/promote`
-  - [ ] `POST /v1/cases/opportunities/{case_id}/promote`
-- [ ] Show gate results / evidence counts / promotion_reason to support manual review.
+- [x] Add a new `/cases` page (or split `/cases/contacts` and `/cases/opportunities`) in Next.js.
+- [x] Add nav link in `TopNav`.
+- [x] Display provisional contacts from `GET /v1/cases/contacts`.
+- [x] Display provisional opportunities from `GET /v1/cases/opportunities`.
+- [x] Add promote actions:
+  - [x] `POST /v1/cases/contacts/{case_id}/promote`
+  - [x] `POST /v1/cases/opportunities/{case_id}/promote`
+- [x] Show gate results / evidence counts / promotion_reason to support manual review.
 
 #### Resolution UI checklist
 
-- [ ] Upgrade `/resolution` page from read-only list to actionable queue.
-- [ ] Render `payload_json` details (current/proposed claim summaries, evidence pointers).
-- [ ] Add action controls for:
-  - [ ] `accept_proposed`
-  - [ ] `reject_proposed`
-  - [ ] `edit_and_accept`
-- [ ] Submit to `POST /v1/resolution/tasks/{task_id}/resolve`.
-- [ ] Refresh UI state after action and show result status.
+- [x] Upgrade `/resolution` page from read-only list to actionable queue.
+- [x] Render `payload_json` details (current/proposed claim summaries, evidence pointers).
+- [x] Add action controls for:
+  - [x] `accept_proposed`
+  - [x] `reject_proposed`
+  - [x] `edit_and_accept`
+- [x] Submit to `POST /v1/resolution/tasks/{task_id}/resolve`.
+- [x] Refresh UI state after action and show result status.
 
 #### Contact page checklist
 
-- [ ] Add a "Provisional / Review" panel to `/contact/[contactId]` when the contact has open case opportunities or resolution tasks.
-- [ ] Add links to `/cases` and `/resolution` filtered context (if filters are implemented in UI).
+- [x] Add a "Provisional / Review" panel to `/contact/[contactId]` when the contact has open case opportunities or resolution tasks.
+- [x] Add links to `/cases` and `/resolution` filtered context (if filters are implemented in UI).
 
 ### Workstream 1D: Contact Page UX Alignment to Intended Design (Partial, P0 Slice)
 
 This phase only delivers the minimum UX alignment needed to support review and action. Deep knowledge-graph context panels are expanded later.
 
-- [ ] Add a recent interaction timeline panel (subject, timestamp, direction, thread).
-- [ ] Add accepted/proposed claims summary panel (sensitive hidden by default).
-- [ ] Add visible "Resolve" affordance for proposed changes / discrepancies.
-- [ ] Keep score trend and current score panels intact.
+- [x] Add a recent interaction timeline panel (subject, timestamp, direction, thread).
+- [x] Add accepted/proposed claims summary panel (sensitive hidden by default).
+- [x] Add visible "Resolve" affordance for proposed changes / discrepancies.
+- [x] Keep score trend and current score panels intact.
 
 ### Phase 1 Testing Procedure (Must Pass Before Phase 2)
 
 #### Automated API tests
 
-- [ ] Add tests for `/scores` next-step payload shape and non-stub behavior.
-- [ ] Add tests for new real opportunities ranking endpoint (contract + ordering).
-- [ ] Add tests for `/cases/contacts` and `/cases/opportunities` response consumption fields.
-- [ ] Add tests for resolution task resolve actions (`accept`, `reject`, `edit_and_accept`) API route behavior (if not already covered).
+- [x] Add tests for `/scores` next-step payload shape and non-stub behavior.
+- [x] Add tests for new real opportunities ranking endpoint (contract + ordering).
+- [x] Add tests for `/cases/contacts` and `/cases/opportunities` response consumption fields.
+- [x] Add tests for resolution task resolve actions (`accept`, `reject`, `edit_and_accept`) API route behavior (if not already covered).
 
 #### Automated UI tests / component tests (or documented manual substitute if no harness)
 
@@ -202,92 +209,92 @@ Goal: Make ranking, news relevance, drafting, and citations trustworthy and time
 
 ### Workstream 2A: Fix Time-Aware Graph Path Ranking (`R5`)
 
-- [ ] Patch `_contact_graph_paths_v2(...)` sorting to prefer newer `latest_seen_at` values rather than older ones.
-- [ ] Sort by parsed datetime / recency integer where possible, not raw strings.
-- [ ] Add deterministic fallback ordering for null timestamps.
+- [x] Patch `_contact_graph_paths_v2(...)` sorting to prefer newer `latest_seen_at` values rather than older ones.
+- [x] Sort by parsed datetime / recency integer where possible, not raw strings.
+- [x] Add deterministic fallback ordering for null timestamps.
 - [ ] Verify `lookback_days` filtering and final ranking are consistent with UI expectations.
 
 ### Workstream 2B: Align News Matching with Graph v2 Read Mode (`R4`)
 
 #### Backend refactor checklist
 
-- [ ] Replace legacy-label candidate queries in `news/match_contacts.py` with v2-aware graph queries (or call shared v2 query helpers).
-- [ ] Use `CRMContact` + `KGAssertion` + `EvidenceChunk` (and company/opportunity edges where available).
-- [ ] Keep candidate generation explainable (path/topic/claim match reasons).
-- [ ] Preserve no-persistence behavior for `/news/match`.
+- [x] Replace legacy-label candidate queries in `news/match_contacts.py` with v2-aware graph queries (or call shared v2 query helpers).
+- [x] Use `CRMContact` + `KGAssertion` + `EvidenceChunk` (and company/opportunity edges where available).
+- [x] Keep candidate generation explainable (path/topic/claim match reasons).
+- [x] Preserve no-persistence behavior for `/news/match`.
 - [ ] Ensure behavior under:
-  - [ ] `graph_v2_read_v2=true`
-  - [ ] `graph_v2_dual_write=false` (default)
+  - [x] `graph_v2_read_v2=true`
+  - [x] `graph_v2_dual_write=false` (default)
   - [ ] fallback/mixed modes only if explicitly supported
 
 #### Relevance quality checklist
 
-- [ ] Include company associations and recent interactions in candidate generation (not only claim text contains keyword).
-- [ ] Add explicit recency weighting for article-to-contact rerank.
-- [ ] Return evidence refs that point to claims/interactions/chunks (not summary-only statements).
+- [x] Include company associations and recent interactions in candidate generation (not only claim text contains keyword).
+- [x] Add explicit recency weighting for article-to-contact rerank.
+- [x] Return evidence refs that point to claims/interactions/chunks (not summary-only statements).
 
 ### Workstream 2C: Tighten Claim Provenance and Draft Citation Fidelity (`R7`)
 
 #### Provenance capture checklist
 
-- [ ] Stop assigning identical `chunks[:3]` evidence refs to every claim by default.
-- [ ] Use extractor-provided spans (`evidence_spans`) when available to map claims to relevant chunk(s).
-- [ ] Implement claim-to-chunk alignment fallback (text span / semantic overlap) when extractor spans are absent.
-- [ ] Persist claim-level evidence refs that are specific enough for later drafting/scoring explainability.
+- [x] Stop assigning identical `chunks[:3]` evidence refs to every claim by default.
+- [x] Use extractor-provided spans (`evidence_spans`) when available to map claims to relevant chunk(s).
+- [x] Implement claim-to-chunk alignment fallback (text span / semantic overlap) when extractor spans are absent.
+- [x] Persist claim-level evidence refs that are specific enough for later drafting/scoring explainability.
 - [ ] Keep Neo4j evidence nodes pointer-based (chunk/span/hash only; no large verbatim text).
 
 #### Draft citation checklist
 
-- [ ] Replace "first N relevant chunks => paragraph N" citation logic with paragraph-to-evidence assignment.
-- [ ] Ensure each generated paragraph has zero-or-more explicit evidence refs and no fake one-to-one assumptions.
-- [ ] Mark unsupported paragraphs explicitly (e.g. generic pleasantries) rather than attaching arbitrary citations.
-- [ ] Include citation provenance quality indicators (`direct_claim`, `chunk_support`, `thread_context`, etc.) if feasible.
+- [x] Replace "first N relevant chunks => paragraph N" citation logic with paragraph-to-evidence assignment.
+- [x] Ensure each generated paragraph has zero-or-more explicit evidence refs and no fake one-to-one assumptions.
+- [x] Mark unsupported paragraphs explicitly (e.g. generic pleasantries) rather than attaching arbitrary citations.
+- [x] Include citation provenance quality indicators (`direct_claim`, `chunk_support`, `thread_context`, etc.) if feasible.
 
 ### Workstream 2D: Drafting Trust and Policy Gating Fixes (`R8`)
 
 #### Policy separation checklist
 
-- [ ] Separate `allow_sensitive` from `include_uncertain` / `allow_proposed_claims`.
-- [ ] Add explicit request parameters (or internal defaults) for:
-  - [ ] `allow_sensitive`
-  - [ ] `allow_uncertain_context` (default false)
-  - [ ] `allow_proposed_changes_in_external_text` (default false)
-- [ ] Preserve backward compatibility for existing draft API callers if needed.
+- [x] Separate `allow_sensitive` from `include_uncertain` / `allow_proposed_claims`.
+- [x] Add explicit request parameters (or internal defaults) for:
+  - [x] `allow_sensitive`
+  - [x] `allow_uncertain_context` (default false)
+  - [x] `allow_proposed_changes_in_external_text` (default false)
+- [x] Preserve backward compatibility for existing draft API callers if needed.
 
 #### Retrieval bundle trust checklist
 
-- [ ] Implement v2 accepted assertion retrieval for graph claim snippets (do not zero out accepted claims when v2 is enabled).
-- [ ] Filter motivator/context signals using assertion status and sensitivity policy.
-- [ ] Exclude sensitive assertions by default from motivator signals and prompt payloads.
-- [ ] Include proposed contradictory claims only in an internal note channel/field, not external draft content.
+- [x] Implement v2 accepted assertion retrieval for graph claim snippets (do not zero out accepted claims when v2 is enabled).
+- [x] Filter motivator/context signals using assertion status and sensitivity policy.
+- [x] Exclude sensitive assertions by default from motivator signals and prompt payloads.
+- [x] Include proposed contradictory claims only in an internal note channel/field, not external draft content.
 
 #### Composer/citation enforcement checklist
 
-- [ ] Ensure composer receives policy flags explicitly and logs/returns which gates were applied.
-- [ ] Prevent unconfirmed changes from appearing as statements of fact in generated draft text.
-- [ ] Add post-generation validation that checks drafted claims against allowed evidence/policy scope before saving.
+- [x] Ensure composer receives policy flags explicitly and logs/returns which gates were applied.
+- [x] Prevent unconfirmed changes from appearing as statements of fact in generated draft text.
+- [x] Add post-generation validation that checks drafted claims against allowed evidence/policy scope before saving.
 
 ### Workstream 2E: Score Explainability Trust Hardening (Related to `R7`, `R8`)
 
-- [ ] Upgrade score reasons from generic component dumps to component-specific evidence refs for non-trivial drivers:
-  - [ ] open loops
-  - [ ] commitment/opportunity triggers
-  - [ ] graph-derived boosts
-- [ ] Include evidence quality metadata and timestamps to support "why score moved" explanations.
+- [x] Upgrade score reasons from generic component dumps to component-specific evidence refs for non-trivial drivers:
+  - [x] open loops
+  - [x] commitment/opportunity triggers
+  - [x] graph-derived boosts
+- [x] Include evidence quality metadata and timestamps to support "why score moved" explanations.
 - [ ] Ensure score responses are still lightweight enough for UI rendering.
 
 ### Phase 2 Testing Procedure (Must Pass Before Phase 3)
 
 #### Automated tests (required)
 
-- [ ] Add unit test for v2 path ranking recency ordering (newer path ranks above older path when other features equal).
-- [ ] Add news match tests that operate under `graph_v2_read_v2=true` and validate candidate generation from v2 assertions.
-- [ ] Add provenance tests proving claim evidence refs are not blanket-shared across unrelated claims.
-- [ ] Add draft citation tests validating paragraph-to-evidence mapping behavior.
-- [ ] Add draft policy tests:
-  - [ ] sensitive assertions excluded by default
-  - [ ] uncertain/proposed context excluded from external text by default
-  - [ ] optional inclusion only when explicitly enabled
+- [x] Add unit test for v2 path ranking recency ordering (newer path ranks above older path when other features equal).
+- [x] Add news match tests that operate under `graph_v2_read_v2=true` and validate candidate generation from v2 assertions.
+- [x] Add provenance tests proving claim evidence refs are not blanket-shared across unrelated claims.
+- [x] Add draft citation tests validating paragraph-to-evidence mapping behavior.
+- [x] Add draft policy tests:
+  - [x] sensitive assertions excluded by default
+  - [x] uncertain/proposed context excluded from external text by default
+  - [x] optional inclusion only when explicitly enabled
 
 #### Manual verification (required)
 
@@ -312,18 +319,18 @@ Goal: Improve the quality of extracted context, contact resolution, contradictio
 
 ### Issues Addressed in This Phase
 
-- [ ] `R6` Topic/relationship-signal context dropped before graph persistence
-- [ ] `R9` Transcript/speaker contact matching too weak (email-only)
-- [ ] `R10` Contradiction detection too narrow
+- [x] `R6` Topic/relationship-signal context dropped before graph persistence
+- [x] `R9` Transcript/speaker contact matching too weak (email-only)
+- [x] `R10` Contradiction detection too narrow
 
 ### Workstream 3A: Persist Graph Context Claims Separately from CRM-Promotable Claims (`R6`)
 
 #### Model/logic checklist
 
-- [ ] Split claim filtering into two explicit pipelines:
-  - [ ] `graph_context_claims` (includes topic + relationship signals + other non-promotable but useful context)
-  - [ ] `crm_promotable_claims` (strict subset for case/opportunity promotion and high-value relation persistence)
-- [ ] Add support for `topic` and `relationship_signal` persistence to v2 assertions with evidence.
+- [x] Split claim filtering into two explicit pipelines:
+  - [x] `graph_context_claims` (includes topic + relationship signals + other non-promotable but useful context)
+  - [x] `crm_promotable_claims` (strict subset for case/opportunity promotion and high-value relation persistence)
+- [x] Add support for `topic` and `relationship_signal` persistence to v2 assertions with evidence.
 - [ ] Keep low-signal filtering, but tune it to avoid dropping valuable context terms.
 - [ ] Ensure scoring/drafting/news retrieval can consume these context assertions safely and with policy filtering.
 
@@ -337,46 +344,46 @@ Goal: Improve the quality of extracted context, contact resolution, contradictio
 
 #### Resolution pipeline checklist
 
-- [ ] Extend participant resolution to support name-only transcript speakers (no email).
-- [ ] Add deterministic speaker-name matching against contact cache:
-  - [ ] exact normalized display-name match
-  - [ ] first/last token match
+- [x] Extend participant resolution to support name-only transcript speakers (no email).
+- [x] Add deterministic speaker-name matching against contact cache:
+  - [x] exact normalized display-name match
+  - [x] first/last token match
   - [ ] optional confidence scoring for fuzzy matches
-- [ ] When ambiguous, create identity resolution tasks with ranked candidate suggestions instead of auto-linking.
-- [ ] Preserve provenance of how a contact match was made (`email_exact`, `name_exact`, `name_fuzzy`, `manual_resolution`).
-- [ ] Avoid auto-linking internal-only or low-confidence ambiguous names.
+- [x] When ambiguous, create identity resolution tasks with ranked candidate suggestions instead of auto-linking.
+- [x] Preserve provenance of how a contact match was made (`email_exact`, `name_exact`, `name_fuzzy`, `manual_resolution`).
+- [x] Avoid auto-linking internal-only or low-confidence ambiguous names.
 
 #### UI/ops checklist
 
-- [ ] Surface speaker-resolution tasks in the resolution/cases workflow with enough context (speaker label, transcript interaction id, candidate contacts).
+- [x] Surface speaker-resolution tasks in the resolution/cases workflow with enough context (speaker label, transcript interaction id, candidate contacts).
 
 ### Workstream 3C: Broaden Contradiction Detection and Resolution (`R10`)
 
 #### Contradiction engine checklist
 
-- [ ] Expand contradiction detection beyond employment:
-  - [ ] opportunity stage/status or materially conflicting opportunity claims
-  - [ ] commitments / due dates / owners
-  - [ ] personal detail conflicts (with sensitivity-aware review)
+- [x] Expand contradiction detection beyond employment:
+  - [x] opportunity stage/status or materially conflicting opportunity claims
+  - [x] commitments / due dates / owners
+  - [x] personal detail conflicts (with sensitivity-aware review)
   - [ ] relationship-relevant facts (e.g., key preferences if mutually exclusive)
-- [ ] Normalize comparison rules by claim type (avoid naive JSON inequality where semantic equality exists).
-- [ ] Generate typed resolution tasks with concise, reviewable payloads and evidence refs.
-- [ ] Prevent duplicate open contradiction tasks for the same semantic conflict.
+- [x] Normalize comparison rules by claim type (avoid naive JSON inequality where semantic equality exists).
+- [x] Generate typed resolution tasks with concise, reviewable payloads and evidence refs.
+- [x] Prevent duplicate open contradiction tasks for the same semantic conflict.
 
 #### Resolution UX checklist
 
-- [ ] Update resolution UI to render type-specific editors or helper summaries for new contradiction types.
+- [x] Update resolution UI to render type-specific editors or helper summaries for new contradiction types.
 
 ### Workstream 3D: Opportunity Association and Next-Step Intelligence Quality Upgrade (Completes Review Scope)
 
 This closes remaining quality gaps affecting your goals even if not isolated as a single issue ID.
 
 - [ ] Improve `find_best_opportunity_for_interaction_v2(...)` scoring beyond thread/company/contact overlap:
-  - [ ] recency of last engagement on opportunity
+  - [x] recency of last engagement on opportunity
   - [ ] lexical/semantic similarity between interaction subject/body and opportunity title/context
   - [ ] active commitments/open loops attached to opportunity
   - [ ] opportunity status/stage compatibility
-- [ ] Record why an interaction was linked to an opportunity (scoring components + evidence).
+- [x] Record why an interaction was linked to an opportunity (scoring components + evidence).
 - [ ] Persist structured next-step suggestions at contact+opportunity level (not only free text).
 - [ ] Add time decay and freshness weighting for opportunity prioritization and next-step inference.
 - [ ] Ensure drafts can be generated against a specific `opportunity_id` and use opportunity-linked context.
@@ -398,10 +405,11 @@ This closes remaining quality gaps affecting your goals even if not isolated as 
 
 - [ ] Add worker tests proving `topic` / `relationship_signal` claims are persisted to graph assertions with evidence.
 - [ ] Add transcript resolution tests for:
-  - [ ] exact speaker-name match
-  - [ ] ambiguous match -> resolution task
-  - [ ] no match -> provisional / identity task behavior
-- [ ] Add contradiction tests for at least three non-employment claim types with semantic comparisons.
+  - [x] exact speaker-name match
+  - [x] ambiguous match -> resolution task
+  - [x] no match -> provisional / identity task behavior
+- [x] Add contradiction tests for at least three non-employment claim types with semantic comparisons.
+- [ ] Add opportunity matcher ranking tests covering recency and context similarity.
 - [ ] Add opportunity matcher ranking tests covering recency and context similarity.
 - [ ] Add draft retrieval tests for opportunity-linked drafting input and evidence-backed next-step context.
 
@@ -426,8 +434,8 @@ This closes remaining quality gaps affecting your goals even if not isolated as 
 ## Traceability Matrix (Issue -> Tasks -> Gate)
 
 ### `R1` Stubbed next steps
-- [ ] Phase 1 / Workstream 1A completed
-- [ ] Phase 1 automated `/scores` next-step contract test passed
+- [x] Phase 1 / Workstream 1A completed
+- [x] Phase 1 automated `/scores` next-step contract test passed
 - [ ] Phase 1 manual contact page validation passed
 
 ### `R2` Synthetic opportunities UI
@@ -441,36 +449,36 @@ This closes remaining quality gaps affecting your goals even if not isolated as 
 - [ ] Phase 1 manual promote/resolve workflow passed
 
 ### `R4` News matching legacy graph reads under v2
-- [ ] Phase 2 / Workstream 2B completed
-- [ ] Phase 2 v2 graph-mode news tests passed
+- [x] Phase 2 / Workstream 2B completed
+- [x] Phase 2 v2 graph-mode news tests passed
 - [ ] Phase 2 manual news explainability validation passed
 
 ### `R5` Graph path recency sorting bug
-- [ ] Phase 2 / Workstream 2A completed
-- [ ] Phase 2 recency-order unit test passed
+- [x] Phase 2 / Workstream 2A completed
+- [x] Phase 2 recency-order unit test passed
 
 ### `R6` Context claim drop (topics/relationship signals)
 - [ ] Phase 3 / Workstream 3A completed
 - [ ] Phase 3 worker persistence tests passed
 
 ### `R7` Coarse provenance/citations
-- [ ] Phase 2 / Workstream 2C completed
-- [ ] Phase 2 provenance + citation tests passed
+- [x] Phase 2 / Workstream 2C completed
+- [x] Phase 2 provenance + citation tests passed
 - [ ] Phase 2 manual draft citation inspection passed
 
 ### `R8` Drafting trust/policy misalignment
 - [ ] Phase 2 / Workstream 2D and 2E completed
-- [ ] Phase 2 policy gating tests passed
+- [x] Phase 2 policy gating tests passed
 - [ ] Phase 2 manual sensitive/proposed-change drafting checks passed
 
 ### `R9` Email-only contact matching (transcripts)
 - [ ] Phase 3 / Workstream 3B completed
-- [ ] Phase 3 transcript resolution tests passed
+- [x] Phase 3 transcript resolution tests passed
 - [ ] Phase 3 manual ambiguous-speaker workflow passed
 
 ### `R10` Employment-only contradiction detection
 - [ ] Phase 3 / Workstream 3C completed
-- [ ] Phase 3 multi-claim contradiction tests passed
+- [x] Phase 3 multi-claim contradiction tests passed
 - [ ] Phase 3 manual contradiction resolution workflow passed
 
 ---
@@ -486,4 +494,3 @@ This closes remaining quality gaps affecting your goals even if not isolated as 
   - [ ] run news matching with explainable v2 graph evidence
   - [ ] generate evidence-backed, policy-compliant drafts linked to next steps/opportunities
 - [ ] Test evidence for each phase is recorded (commands + results + manual verification notes).
-

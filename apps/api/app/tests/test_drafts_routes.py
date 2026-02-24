@@ -281,3 +281,146 @@ def test_objective_suggestion_returns_derived_value(monkeypatch) -> None:
     payload = response.json()
     assert payload["contact_id"] == "contact-11"
     assert payload["objective"].startswith("Follow up on partnership")
+
+
+def test_create_draft_passes_and_records_policy_flags(monkeypatch) -> None:
+    reset_db()
+    captured: dict = {}
+
+    def _fake_bundle(*args, **kwargs):  # noqa: ANN001
+        captured["kwargs"] = kwargs
+        return {
+            "contact": {"display_name": "Jamie", "primary_email": "jamie@example.com"},
+            "recent_interactions": [],
+            "recent_interactions_global": [],
+            "relevant_chunks": [],
+            "email_context_snippets": [],
+            "graph_claim_snippets": [],
+            "graph_path_snippets": [],
+            "graph_paths": [],
+            "graph_metrics": {},
+            "assertion_evidence_trace": [],
+            "context_signals_v2": [],
+            "motivator_signals": [],
+            "relationship_score_hint": None,
+            "hybrid_graph_query": "follow up",
+            "graph_focus_terms": [],
+            "opportunity_thread": None,
+            "proposed_next_action": None,
+            "next_action_rationale": [],
+            "allow_sensitive": True,
+            "allow_uncertain_context": True,
+            "allow_proposed_changes_in_external_text": True,
+            "policy_flags": {
+                "allow_sensitive": True,
+                "allow_uncertain_context": True,
+                "allow_proposed_changes_in_external_text": True,
+                "effective_allow_uncertain_for_external": True,
+            },
+            "objective": "follow up",
+            "retrieval_asof": "2026-02-24T00:00:00Z",
+        }
+
+    monkeypatch.setattr(drafts_route, "build_retrieval_bundle", _fake_bundle)
+    monkeypatch.setattr(drafts_route, "resolve_tone_band", lambda *_args, **_kwargs: {"tone_band": "warm_professional"})
+    monkeypatch.setattr(drafts_route, "compose_draft", lambda *_args, **_kwargs: "Draft body text")
+    monkeypatch.setattr(drafts_route, "compose_subject", lambda *_args, **_kwargs: "Draft subject")
+    monkeypatch.setattr(drafts_route, "build_citations_from_bundle", lambda *_args, **_kwargs: [])
+
+    response = client.post(
+        "/v1/drafts",
+        json={
+            "contact_id": "contact-policy",
+            "objective": "follow up",
+            "allow_sensitive": True,
+            "allow_uncertain_context": True,
+            "allow_proposed_changes_in_external_text": True,
+        },
+    )
+    assert response.status_code == 200
+    assert captured["kwargs"]["allow_uncertain_context"] is True
+    assert captured["kwargs"]["allow_proposed_changes_in_external_text"] is True
+
+    db = SessionLocal()
+    try:
+        saved = db.query(Draft).order_by(Draft.created_at.desc()).first()
+        assert saved is not None
+        prompt_json = saved.prompt_json or {}
+        assert prompt_json["allow_sensitive"] is True
+        assert prompt_json["allow_uncertain_context"] is True
+        assert prompt_json["allow_proposed_changes_in_external_text"] is True
+        assert prompt_json["applied_policy_flags"]["effective_allow_uncertain_for_external"] is True
+    finally:
+        db.close()
+
+
+def test_create_draft_blocks_when_generated_text_leaks_disallowed_internal_assertion(monkeypatch) -> None:
+    reset_db()
+    monkeypatch.setattr(
+        drafts_route,
+        "build_retrieval_bundle",
+        lambda *_args, **_kwargs: {
+            "contact": {"display_name": "Jamie", "primary_email": "jamie@example.com"},
+            "recent_interactions": [],
+            "recent_interactions_global": [],
+            "relevant_chunks": [],
+            "email_context_snippets": [],
+            "graph_claim_snippets": [],
+            "graph_path_snippets": [],
+            "graph_paths": [],
+            "graph_metrics": {},
+            "assertion_evidence_trace": [],
+            "internal_assertion_evidence_trace": [
+                {
+                    "assertion_id": "a-proposed",
+                    "claim_type": "commitment",
+                    "object_name": "revised pricing concession",
+                    "status": "proposed",
+                    "confidence": 0.91,
+                    "evidence": [],
+                }
+            ],
+            "context_signals_v2": [],
+            "motivator_signals": [],
+            "relationship_score_hint": None,
+            "hybrid_graph_query": "follow up",
+            "graph_focus_terms": [],
+            "opportunity_thread": None,
+            "proposed_next_action": None,
+            "next_action_rationale": [],
+            "allow_sensitive": False,
+            "allow_uncertain_context": False,
+            "allow_proposed_changes_in_external_text": False,
+            "policy_flags": {
+                "allow_sensitive": False,
+                "allow_uncertain_context": False,
+                "allow_proposed_changes_in_external_text": False,
+            },
+            "objective": "follow up",
+            "retrieval_asof": "2026-02-24T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(drafts_route, "resolve_tone_band", lambda *_args, **_kwargs: {"tone_band": "warm_professional"})
+    monkeypatch.setattr(
+        drafts_route,
+        "compose_draft",
+        lambda *_args, **_kwargs: "Hi Jamie,\n\nI can offer a revised pricing concession.\n\nBest,\n[Your Name]",
+    )
+    monkeypatch.setattr(drafts_route, "compose_subject", lambda *_args, **_kwargs: "Draft subject")
+    monkeypatch.setattr(drafts_route, "build_citations_from_bundle", lambda *_args, **_kwargs: [])
+
+    response = client.post(
+        "/v1/drafts",
+        json={
+            "contact_id": "contact-viol",
+            "objective": "follow up",
+            "allow_sensitive": False,
+            "allow_uncertain_context": False,
+            "allow_proposed_changes_in_external_text": False,
+        },
+    )
+
+    assert response.status_code == 422
+    payload = response.json()
+    assert "outside the allowed evidence/policy scope" in payload["detail"]["message"]
+    assert payload["detail"]["violations"][0]["type"] == "uncertain_assertion_leak"

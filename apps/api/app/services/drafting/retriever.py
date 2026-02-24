@@ -4,6 +4,7 @@ import math
 import re
 from collections import Counter
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -644,8 +645,17 @@ def derive_objective_from_bundle(bundle: dict) -> tuple[str, dict]:
     }
 
 
-def build_retrieval_bundle(db: Session, contact_id: str, objective: str | None, allow_sensitive: bool) -> dict:
+def build_retrieval_bundle(
+    db: Session,
+    contact_id: str,
+    objective: str | None,
+    allow_sensitive: bool,
+    *,
+    allow_uncertain_context: bool = False,
+    allow_proposed_changes_in_external_text: bool = False,
+) -> dict:
     now = datetime.now(timezone.utc)
+    allow_uncertain_for_external = bool(allow_uncertain_context or allow_proposed_changes_in_external_text)
     contact = db.scalar(select(ContactCache).where(ContactCache.contact_id == contact_id))
     all_interactions = db.scalars(select(Interaction).order_by(Interaction.timestamp.desc()).limit(700)).all()
     contact_interactions = [
@@ -666,7 +676,7 @@ def build_retrieval_bundle(db: Session, contact_id: str, objective: str | None, 
         objective=query,
         max_hops=3,
         limit=14,
-        include_uncertain=allow_sensitive,
+        include_uncertain=allow_uncertain_for_external,
         lookback_days=365,
     )
     graph_paths = _rank_graph_paths(raw_graph_paths, objective_terms)
@@ -705,8 +715,33 @@ def build_retrieval_bundle(db: Session, contact_id: str, objective: str | None, 
     )
 
     settings = get_settings()
+    accepted_claims: list[dict[str, Any]] = []
     if settings.graph_v2_enabled and settings.graph_v2_read_v2:
-        accepted_claims = []
+        for signal in get_contact_context_signals_v2(contact_id, limit=30):
+            status = str(signal.get("status") or "proposed").lower()
+            confidence = float(signal.get("confidence") or 0.0)
+            sensitive = bool(signal.get("sensitive", False))
+            if status not in {"accepted", "verified"}:
+                continue
+            if confidence < 0.5:
+                continue
+            if sensitive and not allow_sensitive:
+                continue
+            accepted_claims.append(
+                {
+                    "claim_id": signal.get("assertion_id"),
+                    "claim_type": signal.get("claim_type"),
+                    "predicate": signal.get("predicate"),
+                    "object_name": signal.get("object_name"),
+                    "value_json": {
+                        "predicate": signal.get("predicate"),
+                        "object": signal.get("object_name"),
+                    },
+                    "status": status,
+                    "confidence": confidence,
+                    "sensitive": sensitive,
+                }
+            )
     else:
         try:
             accepted_claims = get_contact_claims(contact_id, status="accepted")
@@ -723,12 +758,36 @@ def build_retrieval_bundle(db: Session, contact_id: str, objective: str | None, 
         if len(graph_claim_snippets) >= 6:
             break
 
-    assertion_trace = get_contact_assertion_evidence_trace_v2(contact_id, limit=18)
+    assertion_trace_all = get_contact_assertion_evidence_trace_v2(contact_id, limit=18)
+    assertion_trace: list[dict[str, Any]] = []
+    internal_assertion_evidence_trace: list[dict[str, Any]] = []
+    for item in assertion_trace_all:
+        status = str(item.get("status") or "proposed").lower()
+        confidence = float(item.get("confidence") or 0.0)
+        claim_type = str(item.get("claim_type") or "").lower()
+        sensitive = claim_type in {"personal_detail", "family"}  # conservative until trace includes explicit sensitivity flag
+        is_uncertain = status not in {"accepted", "verified"} or confidence < 0.8
+        if sensitive and not allow_sensitive:
+            internal_assertion_evidence_trace.append(item)
+            continue
+        if is_uncertain and not allow_uncertain_for_external:
+            internal_assertion_evidence_trace.append(item)
+            continue
+        assertion_trace.append(item)
+
     context_signals_v2 = get_contact_context_signals_v2(contact_id, limit=12)
     motivator_signals = []
     for signal in context_signals_v2:
         claim_type = str(signal.get("claim_type") or "").lower()
         if claim_type not in {"preference", "opportunity", "commitment", "personal_detail", "topic"}:
+            continue
+        status = str(signal.get("status") or "proposed").lower()
+        confidence = float(signal.get("confidence") or 0.0)
+        sensitive = bool(signal.get("sensitive", False))
+        is_uncertain = status not in {"accepted", "verified"} or confidence < 0.8
+        if sensitive and not allow_sensitive:
+            continue
+        if is_uncertain and not allow_uncertain_for_external:
             continue
         object_name = str(signal.get("object_name") or "").strip()
         if not object_name or object_name in motivator_signals:
@@ -806,6 +865,7 @@ def build_retrieval_bundle(db: Session, contact_id: str, objective: str | None, 
         "graph_paths": graph_paths,
         "graph_metrics": graph_metrics,
         "assertion_evidence_trace": assertion_trace,
+        "internal_assertion_evidence_trace": internal_assertion_evidence_trace,
         "context_signals_v2": context_signals_v2,
         "motivator_signals": motivator_signals,
         "relationship_score_hint": relationship_score_hint,
@@ -815,6 +875,14 @@ def build_retrieval_bundle(db: Session, contact_id: str, objective: str | None, 
         "proposed_next_action": proposed_next_action,
         "next_action_rationale": next_action_rationale,
         "allow_sensitive": allow_sensitive,
+        "allow_uncertain_context": allow_uncertain_context,
+        "allow_proposed_changes_in_external_text": allow_proposed_changes_in_external_text,
+        "policy_flags": {
+            "allow_sensitive": allow_sensitive,
+            "allow_uncertain_context": allow_uncertain_context,
+            "allow_proposed_changes_in_external_text": allow_proposed_changes_in_external_text,
+            "effective_allow_uncertain_for_external": allow_uncertain_for_external,
+        },
         "objective": objective,
         "retrieval_asof": now.isoformat(),
     }

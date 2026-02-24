@@ -3,181 +3,75 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
-import type { ScoreItem } from "@/components/priority-contacts-browser";
+export type OpportunityContactProfile = {
+  contact_id: string;
+  display_name: string | null;
+  primary_email: string | null;
+  company: string | null;
+};
 
-type OpportunityStage = "interact" | "propose" | "close" | "contracting" | "win";
+export type OpportunityNextStep = {
+  summary: string;
+  type: string;
+  source: string;
+  confidence: number;
+  contact_id?: string | null;
+  opportunity_id?: string | null;
+  case_id?: string | null;
+  evidence_refs?: Array<Record<string, unknown>>;
+};
 
-type Opportunity = {
-  id: string;
+export type RankedOpportunity = {
+  opportunity_id?: string | null;
+  case_id?: string | null;
   title: string;
-  company: string;
-  description: string;
-  image: string;
-  contacts: ScoreItem[];
-  stage: OpportunityStage;
-  totalValue: number;
-  strategicValueScore: number;
-  likelihoodScore: number;
-  strategicPriorityScore: number;
+  company_name?: string | null;
+  status: string;
+  entity_status: "canonical" | "provisional" | "rejected";
+  kind: "opportunity" | "case_opportunity";
+  priority_score: number;
+  next_step?: OpportunityNextStep | null;
+  linked_contacts: OpportunityContactProfile[];
+  reason_chain: string[];
+  updated_at?: string | null;
+  last_engagement_at?: string | null;
+  thread_id?: string | null;
 };
 
-type StageFilter = OpportunityStage | "all";
+type KindFilter = "all" | RankedOpportunity["kind"];
 
-const OPPORTUNITY_IMAGES = [
-  "https://images.unsplash.com/photo-1460925895917-afdab827c52f?auto=format&fit=crop&w=1200&q=80",
-  "https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?auto=format&fit=crop&w=1400&q=80",
-  "https://images.unsplash.com/photo-1552664730-d307ca884978?auto=format&fit=crop&w=1200&q=80",
-  "https://images.unsplash.com/photo-1551836022-d5d88e9218df?auto=format&fit=crop&w=1200&q=80",
-  "https://images.unsplash.com/photo-1497215728101-856f4ea42174?auto=format&fit=crop&w=1400&q=80",
-  "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1200&q=80",
-] as const;
+const PAGE_SIZE_OPTIONS = [5, 10, 20];
 
-const STAGE_LABEL: Record<OpportunityStage, string> = {
-  interact: "Interaction Track",
-  propose: "Proposal Track",
-  close: "Closing Track",
-  contracting: "Contracting Track",
-  win: "Won Track",
-};
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
+function badgeLabel(item: RankedOpportunity): string {
+  if (item.kind === "case_opportunity") {
+    return "Provisional Opportunity";
+  }
+  return item.entity_status === "canonical" ? "Promoted Opportunity" : "Opportunity";
 }
 
-function contactLabel(item: ScoreItem): string {
-  const displayName = item.display_name?.trim();
-  if (displayName) {
-    return displayName;
-  }
-  if (item.primary_email) {
-    return item.primary_email;
-  }
-  return "Unknown contact";
+function contactLabel(contact: OpportunityContactProfile): string {
+  return contact.display_name?.trim() || contact.primary_email || contact.contact_id;
 }
 
-function normalizeTextLine(value: string): string {
-  return value.replace(/^stub:\s*/i, "").replace(/\s+/g, " ").trim();
-}
-
-function inferOpportunityStage(sourceText: string, likelihoodScore: number): OpportunityStage {
-  const normalized = sourceText.toLowerCase();
-  if (normalized.includes("won") || normalized.includes("closed won") || normalized.includes("signed")) {
-    return "win";
-  }
-  if (
-    normalized.includes("contract") ||
-    normalized.includes("msa") ||
-    normalized.includes("procurement") ||
-    normalized.includes("legal")
-  ) {
-    return "contracting";
-  }
-  if (normalized.includes("close") || normalized.includes("closing") || likelihoodScore >= 86) {
-    return "close";
-  }
-  if (normalized.includes("proposal") || normalized.includes("pricing") || normalized.includes("quote")) {
-    return "propose";
-  }
-  return "interact";
-}
-
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(value);
-}
-
-function makeOpportunityId(company: string, index: number): string {
-  const slug = company
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return `${slug || "opportunity"}-${index}`;
-}
-
-function buildOpportunities(items: ScoreItem[]): Opportunity[] {
-  const byCompany = new Map<string, ScoreItem[]>();
-  for (const item of items) {
-    const company = item.company?.trim() || "Independent Network";
-    const companyRows = byCompany.get(company) ?? [];
-    companyRows.push(item);
-    byCompany.set(company, companyRows);
-  }
-
-  return Array.from(byCompany.entries())
-    .map(([company, rows], index) => {
-      const contacts = [...rows].sort((a, b) => b.priority_score - a.priority_score);
-      const avgPriority = contacts.reduce((sum, row) => sum + row.priority_score, 0) / contacts.length;
-      const avgRelationship = contacts.reduce((sum, row) => sum + row.relationship_score, 0) / contacts.length;
-      const totalValue = Math.round(
-        contacts.reduce((sum, row) => sum + row.priority_score * 5200 + row.relationship_score * 1800, 0)
-      );
-
-      const strategicValueScore = clamp(Math.round(avgRelationship * 0.65 + Math.min(24, contacts.length * 6)), 1, 100);
-      const likelihoodScore = clamp(Math.round(avgPriority * 0.75 + Math.min(22, contacts.length * 5)), 1, 100);
-      const valueScore = clamp(Math.round((totalValue / 950000) * 100), 1, 100);
-      const strategicPriorityScore = clamp(
-        Math.round(valueScore * 0.4 + strategicValueScore * 0.3 + likelihoodScore * 0.3),
-        1,
-        100
-      );
-
-      const primaryContact = contacts[0];
-      const primaryContactName = primaryContact ? contactLabel(primaryContact) : "primary contact";
-      const description =
-        normalizeTextLine(primaryContact?.reasons[0]?.summary ?? "") ||
-        normalizeTextLine(primaryContact?.why_now ?? "") ||
-        `${company} opportunity has ${contacts.length} linked priority contacts.`;
-      const stage = inferOpportunityStage(
-        `${primaryContact?.why_now ?? ""} ${primaryContact?.reasons.map((reason) => reason.summary).join(" ") ?? ""}`,
-        likelihoodScore
-      );
-
-      return {
-        id: makeOpportunityId(company, index + 1),
-        title: `${company}: ${STAGE_LABEL[stage]} with ${primaryContactName}`,
-        company,
-        description,
-        image: OPPORTUNITY_IMAGES[index % OPPORTUNITY_IMAGES.length],
-        contacts,
-        stage,
-        totalValue,
-        strategicValueScore,
-        likelihoodScore,
-        strategicPriorityScore,
-      };
-    })
-    .sort((a, b) => b.strategicPriorityScore - a.strategicPriorityScore);
-}
-
-export function PriorityOpportunities({ items }: { items: ScoreItem[] }) {
-  const opportunities = useMemo(() => buildOpportunities(items), [items]);
-  const [selectedOpportunityId, setSelectedOpportunityId] = useState<string | null>(null);
-  const [stageFilter, setStageFilter] = useState<StageFilter>("all");
-  const [pageSize, setPageSize] = useState<number>(6);
+export function PriorityOpportunities({ items }: { items: RankedOpportunity[] }) {
+  const [kindFilter, setKindFilter] = useState<KindFilter>("all");
+  const [pageSize, setPageSize] = useState<number>(PAGE_SIZE_OPTIONS[0]);
   const [page, setPage] = useState<number>(1);
 
-  const filteredOpportunities = useMemo(() => {
-    if (stageFilter === "all") {
-      return opportunities;
+  const filtered = useMemo(() => {
+    if (kindFilter === "all") {
+      return items;
     }
-    return opportunities.filter((opportunity) => opportunity.stage === stageFilter);
-  }, [opportunities, stageFilter]);
+    return items.filter((item) => item.kind === kindFilter);
+  }, [items, kindFilter]);
 
-  const safePageSize = Math.max(3, pageSize);
-  const totalPages = Math.max(1, Math.ceil(filteredOpportunities.length / safePageSize));
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const currentPage = Math.min(page, totalPages);
-  const start = (currentPage - 1) * safePageSize;
-  const end = start + safePageSize;
-  const pageItems = filteredOpportunities.slice(start, end);
+  const start = (currentPage - 1) * pageSize;
+  const pageItems = filtered.slice(start, start + pageSize);
 
-  const selectedOpportunity =
-    pageItems.find((opportunity) => opportunity.id === selectedOpportunityId) ?? pageItems[0] ?? null;
-
-  if (opportunities.length === 0) {
-    return <p className="muted">No opportunities could be derived from current contact scoring data.</p>;
+  if (items.length === 0) {
+    return <p className="muted">No real opportunities or provisional opportunity cases are available yet.</p>;
   }
 
   return (
@@ -185,59 +79,48 @@ export function PriorityOpportunities({ items }: { items: ScoreItem[] }) {
       <article className="card">
         <div className="controlsGrid">
           <div className="controlGroup">
-            <label className="label" htmlFor="opportunity-stage-filter">
-              Stage
+            <label className="label" htmlFor="opp-kind-filter">
+              Opportunity Type
             </label>
             <select
-              id="opportunity-stage-filter"
-              value={stageFilter}
+              id="opp-kind-filter"
+              value={kindFilter}
               onChange={(event) => {
-                setStageFilter(event.target.value as StageFilter);
+                setKindFilter(event.target.value as KindFilter);
                 setPage(1);
-                setSelectedOpportunityId(null);
               }}
             >
-              <option value="all">All Stages</option>
-              <option value="interact">interact</option>
-              <option value="propose">propose</option>
-              <option value="close">close</option>
-              <option value="contracting">contracting</option>
-              <option value="win">win</option>
+              <option value="all">All</option>
+              <option value="opportunity">Promoted</option>
+              <option value="case_opportunity">Provisional</option>
             </select>
           </div>
 
           <div className="controlGroup">
-            <label className="label" htmlFor="opportunity-page-size">
+            <label className="label" htmlFor="opp-page-size">
               Opportunities Per Page
             </label>
-            <input
-              id="opportunity-page-size"
-              type="number"
-              min={3}
-              step={1}
-              value={String(safePageSize)}
+            <select
+              id="opp-page-size"
+              value={String(pageSize)}
               onChange={(event) => {
-                const raw = Number(event.target.value);
-                const normalized = Number.isFinite(raw) ? Math.max(3, Math.floor(raw)) : 3;
-                setPageSize(normalized);
+                setPageSize(Number(event.target.value));
                 setPage(1);
-                setSelectedOpportunityId(null);
               }}
-            />
+            >
+              {PAGE_SIZE_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div className="controlGroup">
-            <label className="label" htmlFor="opportunity-page-select">
+            <label className="label" htmlFor="opp-page">
               Page
             </label>
-            <select
-              id="opportunity-page-select"
-              value={String(currentPage)}
-              onChange={(event) => {
-                setPage(Number(event.target.value));
-                setSelectedOpportunityId(null);
-              }}
-            >
+            <select id="opp-page" value={String(currentPage)} onChange={(event) => setPage(Number(event.target.value))}>
               {Array.from({ length: totalPages }, (_unused, index) => index + 1).map((option) => (
                 <option key={option} value={option}>
                   {option} / {totalPages}
@@ -248,26 +131,15 @@ export function PriorityOpportunities({ items }: { items: ScoreItem[] }) {
         </div>
 
         <div className="pagerRow">
-          <button
-            className="btnSecondary"
-            onClick={() => {
-              setPage((previous) => Math.max(1, previous - 1));
-              setSelectedOpportunityId(null);
-            }}
-            disabled={currentPage <= 1}
-          >
+          <button className="btnSecondary" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={currentPage <= 1}>
             Previous
           </button>
           <p className="muted">
-            Showing {filteredOpportunities.length === 0 ? 0 : start + 1}-{Math.min(end, filteredOpportunities.length)} of{" "}
-            {filteredOpportunities.length}
+            Showing {filtered.length === 0 ? 0 : start + 1}-{Math.min(start + pageSize, filtered.length)} of {filtered.length}
           </p>
           <button
             className="btnSecondary"
-            onClick={() => {
-              setPage((previous) => Math.min(totalPages, previous + 1));
-              setSelectedOpportunityId(null);
-            }}
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
             disabled={currentPage >= totalPages}
           >
             Next
@@ -275,76 +147,78 @@ export function PriorityOpportunities({ items }: { items: ScoreItem[] }) {
         </div>
       </article>
 
-      {filteredOpportunities.length === 0 && <p className="muted">No opportunities match the selected stage filter.</p>}
+      {filtered.length === 0 && <p className="muted">No opportunities match the selected filter.</p>}
 
-      <div className="opportunityGrid">
-        {pageItems.map((opportunity) => {
-          const isSelected = selectedOpportunity?.id === opportunity.id;
-          return (
-            <article key={opportunity.id} className="opportunityTile">
-              <button
-                type="button"
-                className={`opportunityTileButton${isSelected ? " isSelected" : ""}`}
-                onClick={() => setSelectedOpportunityId(opportunity.id)}
-                style={{
-                  backgroundImage: `linear-gradient(rgba(0, 0, 0, 0.38), rgba(0, 0, 0, 0.84)), url("${opportunity.image}")`,
-                }}
-              >
-                <div className="opportunityTileTopRow">
-                  <p className="opportunityStageBadge">{opportunity.stage}</p>
-                  <p className="opportunityPriorityPill">Strategic Priority {opportunity.strategicPriorityScore}</p>
-                </div>
-                <h3>{opportunity.title}</h3>
-                <p className="opportunityDescription">{opportunity.description}</p>
-                <p className="opportunityLinkedContacts">
-                  Linked contacts: {opportunity.contacts.slice(0, 4).map((contact) => contactLabel(contact)).join(", ")}
-                </p>
-                <div className="opportunityMetricRow">
-                  <span>Total Value {formatCurrency(opportunity.totalValue)}</span>
-                  <span>Strategic Value {opportunity.strategicValueScore}</span>
-                  <span>Close Likelihood {opportunity.likelihoodScore}%</span>
-                </div>
-              </button>
-            </article>
-          );
-        })}
-      </div>
-
-      {selectedOpportunity && (
-        <article className="opportunityContactsPanel">
-          <div className="cardHeaderRow">
-            <div>
-              <p className="sectionEyebrow">Opportunity Contacts</p>
-              <h3 className="opportunityContactsPanelTitle">{selectedOpportunity.title}</h3>
+      {pageItems.map((item) => {
+        const id = item.opportunity_id || item.case_id || item.title;
+        const casesHref = item.case_id ? `/cases?focusCaseId=${encodeURIComponent(item.case_id)}` : "/cases";
+        return (
+          <article key={id} className="card">
+            <div className="grid">
+              <div>
+                <div className="label">Title</div>
+                <div className="value">{item.title}</div>
+              </div>
+              <div>
+                <div className="label">Company</div>
+                <div className="value">{item.company_name || "Not available"}</div>
+              </div>
+              <div>
+                <div className="label">Priority</div>
+                <div className="value">{item.priority_score.toFixed(1)}</div>
+              </div>
+              <div>
+                <div className="label">Type</div>
+                <div className="value">{badgeLabel(item)}</div>
+              </div>
             </div>
-          </div>
-          <p className="muted">
-            Stage: {selectedOpportunity.stage} | Strategic Priority: {selectedOpportunity.strategicPriorityScore} | Total Value:{" "}
-            {formatCurrency(selectedOpportunity.totalValue)}
-          </p>
-          <p>{selectedOpportunity.description}</p>
 
-          <div className="opportunityContactsGrid">
-            {selectedOpportunity.contacts.map((contact) => (
-              <article key={contact.contact_id} className="opportunityContactCard">
-                <div className="label">Contact</div>
-                <div className="value">{contactLabel(contact)}</div>
-                <p className="muted">Company: {contact.company?.trim() || selectedOpportunity.company}</p>
-                <p className="muted">Email: {contact.primary_email || "Not available"}</p>
-                <div className="opportunityContactMetrics">
-                  <span>Priority {contact.priority_score.toFixed(1)}</span>
-                  <span>Relationship {contact.relationship_score.toFixed(1)}</span>
-                </div>
-                <p>{normalizeTextLine(contact.why_now)}</p>
-                {contact.reasons[0] && <p className="muted">{normalizeTextLine(contact.reasons[0].summary)}</p>}
+            <p className="muted">
+              Status: {item.status} | Entity status: {item.entity_status}
+              {item.thread_id ? ` | Thread: ${item.thread_id}` : ""}
+            </p>
+
+            {item.next_step?.summary ? (
+              <p>
+                <span className="label">Suggested Next Step</span>: {item.next_step.summary}
+              </p>
+            ) : (
+              <p className="muted">No next-step suggestion yet.</p>
+            )}
+
+            {item.next_step && (
+              <p className="muted">
+                Source: {item.next_step.source} | Confidence: {item.next_step.confidence.toFixed(2)} | Evidence refs: {item.next_step.evidence_refs?.length ?? 0}
+              </p>
+            )}
+
+            {item.reason_chain.length > 0 && (
+              <p className="muted">
+                Why ranked: {item.reason_chain.join(" | ")}
+              </p>
+            )}
+
+            {item.linked_contacts.length > 0 && (
+              <div>
+                <div className="label">Linked Contacts</div>
                 <div className="actionsRow">
-                  <Link href={`/contact/${contact.contact_id}`}>Open contact</Link>
+                  {item.linked_contacts.slice(0, 4).map((contact) => (
+                    <Link key={contact.contact_id} href={`/contact/${contact.contact_id}`}>
+                      {contactLabel(contact)}
+                    </Link>
+                  ))}
                 </div>
-              </article>
-            ))}
-          </div>
-        </article>
-      )}
+              </div>
+            )}
+
+            <div className="actionsRow">
+              {item.opportunity_id ? <span className="muted">Opportunity ID: {item.opportunity_id}</span> : null}
+              {item.case_id ? <Link href={casesHref}>Review provisional opportunity</Link> : null}
+              {!item.case_id ? <Link href="/cases">Open Cases</Link> : null}
+            </div>
+          </article>
+        );
+      })}
     </>
   );
 }

@@ -117,7 +117,9 @@ def test_contact_score_detail_includes_profile_interaction_summary_and_component
         assert payload.interaction_summary.last_subject == "Project kickoff"
         assert payload.interaction_summary.recent_topics
         assert payload.interaction_summary.priority_next_step
-        assert payload.interaction_summary.priority_next_step.startswith("Stub:")
+        assert not payload.interaction_summary.priority_next_step.startswith("Stub:")
+        assert payload.interaction_summary.next_step is not None
+        assert payload.interaction_summary.next_step.source in {"heuristic", "opportunity", "case_opportunity", "llm"}
 
         assert payload.current is not None
         assert payload.score_components is not None
@@ -195,6 +197,21 @@ def test_today_scores_uses_latest_snapshot_values(monkeypatch) -> None:
         db.close()
 
 
+def test_build_score_reason_includes_component_specific_evidence_refs() -> None:
+    reason = scores._build_score_reason(
+        "2026-02-24T10:00:00Z",
+        {"days_since_last": 18},
+        {"open_loop_count": 2, "open_loops": 10.0, "trigger_score": 5.0, "triggers": 5.0},
+        {"metrics": {"recent_relation_count": 3, "path_count_2hop": 7}},
+    )
+
+    kinds = {item.get("kind") for item in reason.evidence_refs if isinstance(item, dict)}
+    assert {"recency_driver", "open_loop_driver", "trigger_driver", "graph_boost_driver"} <= kinds
+    graph_ref = next(item for item in reason.evidence_refs if item.get("kind") == "graph_boost_driver")
+    assert graph_ref["metrics"]["recent_relation_count"] == 3
+    assert graph_ref["observed_at"] == "2026-02-24T10:00:00Z"
+
+
 def test_contact_score_detail_prefers_llm_summary_when_available(monkeypatch) -> None:
     reset_db()
     db = SessionLocal()
@@ -241,7 +258,7 @@ def test_contact_score_detail_prefers_llm_summary_when_available(monkeypatch) ->
             lambda **_kwargs: (
                 "LLM summary from message excerpts only.",
                 ["Proposal details", "Pilot timeline"],
-                "Stub: verify open opportunities in HubSpot and send a proposal follow-up.",
+                "Verify open opportunities in HubSpot and send a proposal follow-up.",
             ),
         )
 
@@ -249,11 +266,9 @@ def test_contact_score_detail_prefers_llm_summary_when_available(monkeypatch) ->
         assert payload.interaction_summary is not None
         assert payload.interaction_summary.brief == "LLM summary from message excerpts only."
         assert payload.interaction_summary.recent_topics == ["Proposal details", "Pilot timeline"]
-        assert payload.interaction_summary.priority_next_step == (
-            "Stub: verify open opportunities in HubSpot and send a proposal follow-up."
-        )
+        assert payload.interaction_summary.priority_next_step == "Verify open opportunities in HubSpot and send a proposal follow-up."
         assert payload.interaction_summary.summary_source == "llm"
-        assert payload.interaction_summary.priority_next_step_source == "stub_llm"
+        assert payload.interaction_summary.priority_next_step_source == "llm"
     finally:
         db.close()
 
@@ -305,9 +320,10 @@ def test_contact_score_detail_uses_cached_interaction_summary(monkeypatch) -> No
             last_subject=None,
             recent_subjects=[],
             recent_topics=["Pilot timeline"],
-            priority_next_step="Stub: follow up on pilot timeline opportunity.",
+            priority_next_step="Follow up on pilot timeline opportunity.",
+            next_step=None,
             summary_source="llm",
-            priority_next_step_source="stub_llm",
+            priority_next_step_source="llm",
             brief="Cached summary payload.",
         )
         scores._write_cached_interaction_summary("contact-cache-hit", cached_summary)
@@ -380,7 +396,7 @@ def test_refresh_cached_interaction_summary_rebuilds_and_stores(monkeypatch) -> 
         assert cached is not None
         assert cached.brief == rebuilt.brief
         assert cached.priority_next_step is not None
-        assert cached.priority_next_step.startswith("Stub:")
+        assert not cached.priority_next_step.startswith("Stub:")
     finally:
         db.close()
 
@@ -448,5 +464,73 @@ def test_refresh_contact_interaction_summary_endpoint_returns_refreshed_summary(
         cached = scores.get_cached_interaction_summary("contact-refresh-endpoint")
         assert cached is not None
         assert cached.brief == response.interaction_summary.brief
+    finally:
+        db.close()
+
+
+def test_ranked_opportunities_returns_real_case_and_promoted_items(monkeypatch) -> None:
+    reset_db()
+    db = SessionLocal()
+    try:
+        db.add_all(
+            [
+                ContactCache(contact_id="contact-a", primary_email="a@example.com", display_name="Alice"),
+                ContactCache(contact_id="contact-b", primary_email="b@example.com", display_name="Bob"),
+            ]
+        )
+        db.commit()
+
+        monkeypatch.setattr(
+            scores,
+            "list_open_opportunities_v2",
+            lambda limit=100: [
+                {
+                    "opportunity_id": "opp-1",
+                    "title": "Acme Renewal",
+                    "company_name": "Acme",
+                    "status": "open",
+                    "entity_status": "canonical",
+                    "thread_id": "thread-1",
+                    "contact_ids": ["contact-a"],
+                    "last_engagement_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ],
+        )
+        monkeypatch.setattr(
+            scores,
+            "list_case_opportunities_v2",
+            lambda status="open", limit=100: [
+                {
+                    "case_id": "case_opp:1",
+                    "title": "Beta Pilot",
+                    "company_name": "Beta Co",
+                    "status": status,
+                    "entity_status": "provisional",
+                    "thread_id": "thread-2",
+                    "interaction_id": "int-1",
+                    "contact_ids": ["contact-b"],
+                    "motivators": ["proposal", "timeline"],
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ],
+        )
+        monkeypatch.setattr(
+            scores,
+            "get_latest_score_snapshots",
+            lambda _ids: {
+                "contact-a": {"priority_score": 82.0},
+                "contact-b": {"priority_score": 60.0},
+            },
+        )
+
+        payload = scores.ranked_opportunities(limit=10, db=db)
+        assert len(payload.items) == 2
+        assert payload.items[0].kind == "opportunity"
+        assert payload.items[0].opportunity_id == "opp-1"
+        assert payload.items[0].next_step is not None
+        assert payload.items[0].linked_contacts[0].display_name == "Alice"
+        assert any(item.kind == "case_opportunity" for item in payload.items)
     finally:
         db.close()

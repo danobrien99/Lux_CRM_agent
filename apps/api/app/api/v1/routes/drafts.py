@@ -65,6 +65,47 @@ def _snippet(value: str, max_chars: int = 220) -> str:
     return f"{normalized[: max_chars - 3].rstrip()}..."
 
 
+def _draft_policy_violations(bundle: dict[str, Any], draft_text: str) -> list[dict[str, Any]]:
+    if not isinstance(draft_text, str) or not draft_text.strip():
+        return []
+    text_lower = draft_text.casefold()
+    violations: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str, str]] = set()
+
+    for item in bundle.get("internal_assertion_evidence_trace", []) or []:
+        if not isinstance(item, dict):
+            continue
+        object_name = str(item.get("object_name") or "").strip()
+        if len(object_name) < 3:
+            continue
+        if object_name.casefold() not in text_lower:
+            continue
+        claim_type = str(item.get("claim_type") or "").strip().lower()
+        status = str(item.get("status") or "proposed").strip().lower()
+        confidence = float(item.get("confidence") or 0.0)
+        if claim_type in {"personal_detail", "family"}:
+            violation_type = "sensitive_assertion_leak"
+        elif status not in {"accepted", "verified"} or confidence < 0.8:
+            violation_type = "uncertain_assertion_leak"
+        else:
+            violation_type = "disallowed_assertion_leak"
+        key = (violation_type, str(item.get("assertion_id") or ""), object_name.casefold())
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        violations.append(
+            {
+                "type": violation_type,
+                "assertion_id": item.get("assertion_id"),
+                "claim_type": claim_type or None,
+                "status": status,
+                "confidence": round(confidence, 4),
+                "object_name": object_name,
+            }
+        )
+    return violations
+
+
 def _retrieval_trace_from_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
     relevant_chunks = []
     for chunk in bundle.get("relevant_chunks", [])[:5]:
@@ -166,7 +207,14 @@ def _serialize_draft(draft: Draft, context_summary: dict | None = None) -> Draft
 
 @router.post("", response_model=DraftResponse)
 def create_draft(payload: DraftRequest, db: Session = Depends(get_db)) -> DraftResponse:
-    bundle = build_retrieval_bundle(db, payload.contact_id, payload.objective, payload.allow_sensitive)
+    bundle = build_retrieval_bundle(
+        db,
+        payload.contact_id,
+        payload.objective,
+        payload.allow_sensitive,
+        allow_uncertain_context=payload.allow_uncertain_context,
+        allow_proposed_changes_in_external_text=payload.allow_proposed_changes_in_external_text,
+    )
     if not (payload.objective or "").strip():
         suggested_objective, _ = derive_objective_from_bundle(bundle)
         bundle["objective"] = suggested_objective
@@ -174,8 +222,18 @@ def create_draft(payload: DraftRequest, db: Session = Depends(get_db)) -> DraftR
     relationship_score = _estimate_relationship_score(bundle)
     tone = resolve_tone_band(relationship_score)
     draft_text = compose_draft(bundle, tone)
+    policy_violations = _draft_policy_violations(bundle, draft_text)
+    if policy_violations:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "message": "Draft includes content outside the allowed evidence/policy scope",
+                "violations": policy_violations,
+                "policy_flags": bundle.get("policy_flags") or {},
+            },
+        )
     draft_subject = compose_subject(bundle, tone)
-    citations = build_citations_from_bundle(bundle)
+    citations = build_citations_from_bundle(bundle, draft_text=draft_text)
     context_summary = {
         "display_name": bundle.get("contact", {}).get("display_name"),
         "primary_email": bundle.get("contact", {}).get("primary_email"),
@@ -184,6 +242,7 @@ def create_draft(payload: DraftRequest, db: Session = Depends(get_db)) -> DraftR
         "relevant_chunks": len(bundle.get("relevant_chunks", [])),
         "graph_claim_snippets": len(bundle.get("graph_claim_snippets", [])),
         "graph_paths": len(bundle.get("graph_paths", [])),
+        "policy_flags": bundle.get("policy_flags") or {},
         "active_thread_id": (bundle.get("opportunity_thread") or {}).get("thread_id")
         if isinstance(bundle.get("opportunity_thread"), dict)
         else None,
@@ -193,6 +252,9 @@ def create_draft(payload: DraftRequest, db: Session = Depends(get_db)) -> DraftR
     prompt_json = {
         "objective": bundle.get("objective"),
         "allow_sensitive": payload.allow_sensitive,
+        "allow_uncertain_context": payload.allow_uncertain_context,
+        "allow_proposed_changes_in_external_text": payload.allow_proposed_changes_in_external_text,
+        "applied_policy_flags": bundle.get("policy_flags") or {},
         "draft_subject": draft_subject,
         "retrieval_trace": retrieval_trace,
     }

@@ -1,10 +1,15 @@
 import { apiGet } from "@/lib/api";
-import { PriorityOpportunities } from "@/components/priority-opportunities";
+import { PriorityOpportunities, type RankedOpportunity } from "@/components/priority-opportunities";
 import { PriorityContactsBrowser, type ScoreItem } from "@/components/priority-contacts-browser";
 
 type ScoreResponse = {
   asof: string;
   items: ScoreItem[];
+};
+
+type OpportunitiesResponse = {
+  asof: string;
+  items: RankedOpportunity[];
 };
 
 const serviceCards = [
@@ -30,8 +35,17 @@ async function getScores(): Promise<ScoreResponse | null> {
   }
 }
 
+async function getOpportunities(): Promise<OpportunitiesResponse | null> {
+  try {
+    return await apiGet<OpportunitiesResponse>("/scores/opportunities?limit=200");
+  } catch {
+    return null;
+  }
+}
+
 export default async function HomePage() {
   const data = await getScores();
+  const opportunities = await getOpportunities();
 
   return (
     <>
@@ -71,9 +85,9 @@ export default async function HomePage() {
       <section id="priority-opportunities" className="projectsSection">
         <p className="sectionEyebrow">Priority Opportunities</p>
         <h2 className="sectionTitle">Priority Opportunities</h2>
-        {!data && <p className="muted">API unavailable. Start backend on port 8000.</p>}
-        {data && data.items.length === 0 && <p className="muted">No priority opportunities identified yet.</p>}
-        {data && data.items.length > 0 && <PriorityOpportunities items={data.items} />}
+        {!opportunities && <p className="muted">API unavailable. Start backend on port 8000.</p>}
+        {opportunities && opportunities.items.length === 0 && <p className="muted">No priority opportunities identified yet.</p>}
+        {opportunities && opportunities.items.length > 0 && <PriorityOpportunities items={opportunities.items} />}
       </section>
 
       <section id="priority-contacts" className="dashboardSection">

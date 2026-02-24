@@ -1575,6 +1575,32 @@ def get_contact_company_hints(contact_ids: list[str]) -> dict[str, str]:
     return results
 
 
+def _contact_graph_path_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+    latest_seen_at = item.get("latest_seen_at")
+    latest_dt: datetime | None = None
+    if isinstance(latest_seen_at, datetime):
+        if latest_seen_at.tzinfo is None:
+            latest_dt = latest_seen_at.replace(tzinfo=timezone.utc)
+        else:
+            latest_dt = latest_seen_at.astimezone(timezone.utc)
+    elif isinstance(latest_seen_at, str) and latest_seen_at.strip():
+        try:
+            latest_dt = datetime.fromisoformat(latest_seen_at.replace("Z", "+00:00")).astimezone(timezone.utc)
+        except ValueError:
+            latest_dt = None
+    null_time_rank = 1 if latest_dt is None else 0
+    latest_ts_rank = -latest_dt.timestamp() if latest_dt is not None else 0.0
+    return (
+        int(item.get("uncertain_hops") or 0),
+        -int(item.get("opportunity_hits") or 0),
+        null_time_rank,
+        latest_ts_rank,
+        -float(item.get("avg_confidence") or 0.0),
+        int(item.get("hops") or 0),
+        str(item.get("path_text") or ""),
+    )
+
+
 def _contact_graph_paths_v2(
     contact_id: str,
     *,
@@ -1865,16 +1891,7 @@ def _contact_graph_paths_v2(
             continue
         filtered.append(row)
 
-    filtered.sort(
-        key=lambda item: (
-            int(item.get("uncertain_hops") or 0),
-            -int(item.get("opportunity_hits") or 0),
-            str(item.get("latest_seen_at") or ""),
-            -float(item.get("avg_confidence") or 0.0),
-            int(item.get("hops") or 0),
-        ),
-        reverse=False,
-    )
+    filtered.sort(key=_contact_graph_path_sort_key)
     return filtered[: max(1, limit)]
 
 
@@ -3371,6 +3388,54 @@ def promote_case_opportunity_v2(
     }
 
 
+def list_open_opportunities_v2(limit: int = 100) -> list[dict[str, Any]]:
+    with neo4j_session() as session:
+        if session is None:
+            return []
+        rows = _session_run(
+            session,
+            _ontify_v2_read_cypher(
+                """
+            MATCH (opp:CRMOpportunity)
+            WHERE coalesce(opp.status, "open") = "open"
+            OPTIONAL MATCH (opp)-[:OPPORTUNITY_FOR_COMPANY|OPPORTUNITY_FOR_COMPANY_DERIVED]->(co:CRMCompany)
+            OPTIONAL MATCH (opp)-[:INVOLVES_CONTACT]->(ct:CRMContact)
+            OPTIONAL MATCH (eng:CRMEngagement)-[:ENGAGED_OPPORTUNITY|ENGAGED_OPPORTUNITY_DERIVED]->(opp)
+            RETURN opp.external_id AS opportunity_id,
+                   opp.title AS title,
+                   co.name AS company_name,
+                   coalesce(opp.status, "open") AS status,
+                   coalesce(opp.entity_status, "canonical") AS entity_status,
+                   opp.last_thread_id AS thread_id,
+                   collect(DISTINCT ct.external_id) AS contact_ids,
+                   toString(max(eng.occurred_at)) AS last_engagement_at,
+                   toString(opp.updated_at) AS updated_at,
+                   toString(opp.created_at) AS created_at
+            ORDER BY coalesce(opp.updated_at, datetime('1970-01-01T00:00:00Z')) DESC, opp.external_id ASC
+            LIMIT $limit
+            """
+            ),
+            limit=max(1, limit),
+        ).data()
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        results.append(
+            {
+                "opportunity_id": row.get("opportunity_id"),
+                "title": row.get("title") or "Untitled Opportunity",
+                "company_name": row.get("company_name"),
+                "status": row.get("status") or "open",
+                "entity_status": row.get("entity_status") or "canonical",
+                "thread_id": row.get("thread_id"),
+                "contact_ids": [cid for cid in (row.get("contact_ids") or []) if isinstance(cid, str)],
+                "last_engagement_at": row.get("last_engagement_at"),
+                "updated_at": row.get("updated_at"),
+                "created_at": row.get("created_at"),
+            }
+        )
+    return results
+
+
 def find_best_opportunity_for_interaction_v2(
     *,
     thread_id: str | None,
@@ -3388,12 +3453,15 @@ def find_best_opportunity_for_interaction_v2(
             WHERE coalesce(opp.status, "open") = "open"
             OPTIONAL MATCH (opp)-[:OPPORTUNITY_FOR_COMPANY]->(co:CRMCompany)
             OPTIONAL MATCH (opp)-[:INVOLVES_CONTACT]->(ct:CRMContact)
-            RETURN opp.external_id AS opportunity_id,
-                   opp.title AS title,
-                   opp.last_thread_id AS last_thread_id,
-                   co.name AS company_name,
-                   collect(DISTINCT ct.external_id) AS contact_ids
-            LIMIT $limit
+                RETURN opp.external_id AS opportunity_id,
+                       opp.title AS title,
+                       opp.last_thread_id AS last_thread_id,
+                       opp.updated_at AS updated_at,
+                       opp.stage AS stage,
+                       opp.status AS status,
+                       co.name AS company_name,
+                       collect(DISTINCT ct.external_id) AS contact_ids
+                LIMIT $limit
             """
             ),
             limit=max(1, limit),
@@ -3401,25 +3469,91 @@ def find_best_opportunity_for_interaction_v2(
     company_norm = _normalize_key(company_name)
     thread_norm = _normalize_text(thread_id)
     contact_set = {item for item in contact_ids if isinstance(item, str) and item}
+
+    def _parse_dt(value: Any) -> datetime | None:
+        if value is None:
+            return None
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+        except ValueError:
+            return None
+
+    def _recency_match_points(updated_at: Any) -> float:
+        dt = _parse_dt(updated_at)
+        if dt is None:
+            return 0.0
+        age_days = max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0)
+        if age_days <= 14:
+            return 0.10
+        if age_days <= 30:
+            return 0.07
+        if age_days <= 90:
+            return 0.04
+        if age_days > 180:
+            return -0.05
+        return 0.0
+
     best: dict[str, Any] | None = None
     best_score = 0.0
     for row in rows:
         score = 0.0
+        score_components = {
+            "thread_match": 0.0,
+            "company_match": 0.0,
+            "contact_overlap": 0.0,
+            "recency": 0.0,
+        }
         if thread_norm and _normalize_text(row.get("last_thread_id")) == thread_norm:
             score += 0.45
+            score_components["thread_match"] = 0.45
         if company_norm and _normalize_key(row.get("company_name")) == company_norm:
             score += 0.35
+            score_components["company_match"] = 0.35
         candidate_contacts = {item for item in (row.get("contact_ids") or []) if isinstance(item, str) and item}
         if contact_set and candidate_contacts:
             overlap = len(contact_set & candidate_contacts)
-            score += min(0.20, overlap * 0.10)
-        if score > best_score:
+            overlap_points = min(0.20, overlap * 0.10)
+            score += overlap_points
+            score_components["contact_overlap"] = overlap_points
+        recency_points = _recency_match_points(row.get("updated_at"))
+        score += recency_points
+        score_components["recency"] = round(recency_points, 4)
+
+        if score > best_score or (
+            best is not None and abs(score - best_score) < 1e-9 and str(row.get("updated_at") or "") > str(best.get("updated_at") or "")
+        ):
+            reason_chain: list[dict[str, Any]] = []
+            if score_components["thread_match"] > 0:
+                reason_chain.append({"kind": "thread_match", "thread_id": row.get("last_thread_id"), "weight": 0.45})
+            if score_components["company_match"] > 0:
+                reason_chain.append({"kind": "company_match", "company_name": row.get("company_name"), "weight": 0.35})
+            if score_components["contact_overlap"] > 0:
+                reason_chain.append(
+                    {
+                        "kind": "contact_overlap",
+                        "overlap_count": len(contact_set & candidate_contacts),
+                        "weight": score_components["contact_overlap"],
+                    }
+                )
+            if score_components["recency"] != 0:
+                reason_chain.append(
+                    {
+                        "kind": "recency",
+                        "updated_at": row.get("updated_at"),
+                        "weight": score_components["recency"],
+                    }
+                )
             best_score = score
             best = {
                 "opportunity_id": row.get("opportunity_id"),
                 "title": row.get("title"),
                 "score": round(score, 4),
                 "company_name": row.get("company_name"),
+                "updated_at": row.get("updated_at"),
+                "status": row.get("status"),
+                "stage": row.get("stage"),
+                "score_components": score_components,
+                "reason_chain": reason_chain,
             }
     if best is None:
         return None
@@ -3665,7 +3799,9 @@ def get_contact_context_signals_v2(contact_id: str, limit: int = 10) -> list[dic
                    a.predicate AS predicate,
                    a.object_name AS object_name,
                    a.confidence AS confidence,
-                   a.status AS status
+                   a.status AS status,
+                   a.sensitive AS sensitive,
+                   a.updated_at AS updated_at
             ORDER BY coalesce(a.confidence, 0.0) DESC, a.updated_at DESC
             LIMIT $limit
             """
@@ -3681,6 +3817,8 @@ def get_contact_context_signals_v2(contact_id: str, limit: int = 10) -> list[dic
             "object_name": row.get("object_name"),
             "confidence": _as_float(row.get("confidence")),
             "status": row.get("status") or "proposed",
+            "sensitive": bool(row.get("sensitive", False)),
+            "updated_at": row.get("updated_at"),
         }
         for row in rows
     ]
