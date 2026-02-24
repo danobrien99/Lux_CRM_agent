@@ -13,6 +13,25 @@ from app.core.config import get_settings
 logger = logging.getLogger(__name__)
 
 
+def _empty_result(interaction_id: str, text: str) -> dict[str, Any]:
+    return {
+        "interaction_id": interaction_id,
+        "entities": [],
+        "relations": [],
+        "topics": [],
+        "signature": hashlib.md5(text.encode("utf-8")).hexdigest(),
+    }
+
+
+def _should_skip_extraction_text(text: str) -> bool:
+    if not text:
+        return True
+    stripped = text.strip()
+    if not stripped:
+        return True
+    return not any(ch.isalnum() for ch in stripped)
+
+
 def _heuristic_extract(interaction_id: str, text: str) -> dict:
     words = [w.strip(".,:;!?()[]{}\"'") for w in text.split() if len(w) > 3]
     unique = sorted(set(w.lower() for w in words))
@@ -134,6 +153,13 @@ def extract_candidates(interaction_id: str, text: str) -> dict:
     Falls back to deterministic heuristic extraction only if explicitly enabled.
     """
     settings = get_settings()
+    if _should_skip_extraction_text(text):
+        logger.info(
+            "cognee_skip_empty_or_non_alnum_text",
+            extra={"interaction_id": interaction_id},
+        )
+        return _empty_result(interaction_id, text or "")
+
     backend = settings.cognee_backend.lower().strip()
 
     if backend == "local":

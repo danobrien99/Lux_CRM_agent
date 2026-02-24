@@ -88,6 +88,9 @@ def create_identity_resolution_task(db: Session, *, email: str, payload_json: di
         payload_json={
             "email": normalized_email,
             "reason": "No contact match found",
+            "entity_status": "provisional",
+            "promotion_reason": "identity_not_resolved",
+            "gate_results": {"identity_match": False},
             **(payload_json or {}),
         },
     )

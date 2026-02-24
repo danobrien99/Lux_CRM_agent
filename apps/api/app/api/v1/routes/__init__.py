@@ -6,6 +6,7 @@ code imports a specific route module (for shared helpers).
 
 __all__ = [
     "admin",
+    "cases",
     "contacts",
     "drafts",
     "health",

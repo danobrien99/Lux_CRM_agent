@@ -1,0 +1,7 @@
+{
+  "promotion_reason": "e2e_override",
+  "gate_results": {
+    "manual_test": true,
+    "override": true
+  }
+}

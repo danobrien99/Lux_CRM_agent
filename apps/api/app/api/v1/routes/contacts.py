@@ -12,6 +12,7 @@ from app.core.security import verify_webhook_secret, webhook_secret_header
 from app.db.neo4j.queries import delete_contact_graph
 from app.db.pg.models import ContactCache, Draft, ResolutionTask
 from app.services.contacts_registry.sync import sync_contacts
+from app.services.identity.internal_users import is_internal_email
 from app.services.resolution.tasks import create_identity_resolution_task
 
 router = APIRouter(prefix="/contacts", tags=["contacts"])
@@ -31,6 +32,14 @@ def contacts_sync(
 
 @router.get("/lookup", response_model=ContactLookupResponse)
 def lookup_contact(email: str, db: Session = Depends(get_db)) -> ContactLookupResponse:
+    if is_internal_email(email):
+        return ContactLookupResponse(
+            contact_id=None,
+            primary_email=email.lower(),
+            display_name=None,
+            resolution_task_id=None,
+        )
+
     contact = db.scalar(select(ContactCache).where(ContactCache.primary_email == email.lower()))
     if contact:
         return ContactLookupResponse(

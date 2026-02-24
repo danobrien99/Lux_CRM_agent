@@ -76,6 +76,10 @@ def _retrieval_trace_from_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
                 "chunk_id": chunk.get("chunk_id"),
                 "interaction_id": chunk.get("interaction_id"),
                 "score": chunk.get("score"),
+                "retrieval_score": chunk.get("retrieval_score"),
+                "thread_id": chunk.get("thread_id"),
+                "timestamp": chunk.get("timestamp"),
+                "recency_days": chunk.get("recency_days"),
                 "snippet": _snippet(text) if text else "",
             }
         )
@@ -89,6 +93,8 @@ def _retrieval_trace_from_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
                 "interaction_id": interaction.get("interaction_id"),
                 "timestamp": interaction.get("timestamp"),
                 "subject": interaction.get("subject"),
+                "thread_id": interaction.get("thread_id"),
+                "direction": interaction.get("direction"),
             }
         )
 
@@ -108,18 +114,30 @@ def _retrieval_trace_from_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
                 "hops": item.get("hops"),
                 "avg_confidence": item.get("avg_confidence"),
                 "uncertain_hops": item.get("uncertain_hops"),
+                "opportunity_hits": item.get("opportunity_hits"),
+                "recency_days": item.get("recency_days"),
+                "retrieval_score": item.get("retrieval_score"),
+                "latest_seen_at": item.get("latest_seen_at"),
                 "predicates": item.get("predicates"),
             }
         )
 
     return {
+        "retrieval_asof": bundle.get("retrieval_asof"),
         "objective_query": bundle.get("objective"),
         "recent_interactions": recent_interactions,
         "vector_chunks": relevant_chunks,
         "graph_claim_snippets": graph_claim_snippets,
         "graph_paths": graph_paths,
         "hybrid_graph_query": bundle.get("hybrid_graph_query"),
+        "graph_focus_terms": bundle.get("graph_focus_terms"),
+        "opportunity_thread": bundle.get("opportunity_thread"),
+        "proposed_next_action": bundle.get("proposed_next_action"),
+        "next_action_rationale": bundle.get("next_action_rationale"),
         "graph_metrics": bundle.get("graph_metrics"),
+        "context_signals_v2": bundle.get("context_signals_v2", []),
+        "motivator_signals": bundle.get("motivator_signals", []),
+        "assertion_evidence_trace": bundle.get("assertion_evidence_trace", []),
     }
 
 
@@ -162,9 +180,13 @@ def create_draft(payload: DraftRequest, db: Session = Depends(get_db)) -> DraftR
         "display_name": bundle.get("contact", {}).get("display_name"),
         "primary_email": bundle.get("contact", {}).get("primary_email"),
         "recent_interactions": len(bundle.get("recent_interactions", [])),
+        "recent_interactions_global": len(bundle.get("recent_interactions_global", [])),
         "relevant_chunks": len(bundle.get("relevant_chunks", [])),
         "graph_claim_snippets": len(bundle.get("graph_claim_snippets", [])),
         "graph_paths": len(bundle.get("graph_paths", [])),
+        "active_thread_id": (bundle.get("opportunity_thread") or {}).get("thread_id")
+        if isinstance(bundle.get("opportunity_thread"), dict)
+        else None,
     }
     retrieval_trace = _retrieval_trace_from_bundle(bundle)
 

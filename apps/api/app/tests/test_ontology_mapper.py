@@ -9,6 +9,7 @@ from app.services.ontology import (
     canonicalize_predicate,
     claim_type_for_predicate,
     clear_ontology_cache,
+    clear_runtime_ontology_contract_cache,
     map_relation_to_claim,
     relation_payload_from_claim,
 )
@@ -18,9 +19,11 @@ from app.services.ontology import (
 def _reset_caches() -> None:
     get_settings.cache_clear()
     clear_ontology_cache()
+    clear_runtime_ontology_contract_cache()
     yield
     get_settings.cache_clear()
     clear_ontology_cache()
+    clear_runtime_ontology_contract_cache()
 
 
 def test_default_ontology_maps_employment_alias_to_canonical_claim() -> None:
@@ -36,6 +39,8 @@ def test_default_ontology_maps_employment_alias_to_canonical_claim() -> None:
     assert claim is not None
     assert claim["claim_type"] == "employment"
     assert claim["value_json"]["predicate"] == "works_at"
+    assert claim["ontology_predicate"] == "hs:worksAt"
+    assert claim["ontology_supported"] is True
     payload = relation_payload_from_claim(claim)
     assert payload is not None
     assert payload["object_kind"] == "Company"
@@ -80,6 +85,8 @@ def test_custom_ontology_file_overrides_mapping(tmp_path, monkeypatch: pytest.Mo
     )
     assert claim is not None
     assert claim["claim_type"] == "opportunity"
+    assert claim["ontology_predicate"] == "hs:hasOpportunity"
+    assert claim["ontology_supported"] is False
+    assert claim["promotion_scope"] == "case_evidence_only"
     payload = relation_payload_from_claim(claim)
-    assert payload is not None
-    assert payload["object_kind"] == "Deal"
+    assert payload is None

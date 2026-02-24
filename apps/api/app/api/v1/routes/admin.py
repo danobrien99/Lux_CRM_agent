@@ -8,9 +8,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_db, get_settings_dep
-from app.api.v1.schemas import BackfillContactStatusResponse, ReprocessRequest
+from app.api.v1.schemas import (
+    BackfillContactStatusResponse,
+    BackfillRunReportIn,
+    BackfillRunReportResponse,
+    ReprocessRequest,
+)
 from app.core.security import verify_webhook_secret, webhook_secret_header
 from app.db.pg.models import ContactCache, Interaction
+from app.services.ingest.store_raw import upsert_raw_event
 from app.workers.jobs import cleanup_data
 from app.workers.queue import enqueue_job
 
@@ -26,6 +32,12 @@ def reprocess(payload: ReprocessRequest) -> dict:
 @router.post("/recompute_scores")
 def recompute_scores() -> dict:
     job_id = enqueue_job("recompute_scores")
+    return {"job_id": job_id, "status": "enqueued"}
+
+
+@router.post("/run_inference")
+def run_inference() -> dict:
+    job_id = enqueue_job("run_inference")
     return {"job_id": job_id, "status": "enqueued"}
 
 
@@ -66,4 +78,28 @@ def backfill_contact_status(
         processed_contact_count=len(processed_contact_ids),
         processed_contact_ids=sorted(processed_contact_ids),
         processed_primary_emails=processed_primary_emails,
+    )
+
+
+@router.post("/backfill_runs/report", response_model=BackfillRunReportResponse)
+def report_backfill_run(
+    payload: BackfillRunReportIn,
+    db: Session = Depends(get_db),
+    settings=Depends(get_settings_dep),
+    x_webhook_secret: str | None = Depends(webhook_secret_header),
+) -> BackfillRunReportResponse:
+    verify_webhook_secret(settings, x_webhook_secret)
+
+    raw_event, created = upsert_raw_event(
+        db,
+        source_system="n8n",
+        event_type="backfill_run_summary",
+        external_id=payload.run_id,
+        payload_json=payload.model_dump(mode="json"),
+    )
+
+    return BackfillRunReportResponse(
+        raw_event_id=raw_event.id,
+        created=created,
+        status="created" if created else "duplicate",
     )

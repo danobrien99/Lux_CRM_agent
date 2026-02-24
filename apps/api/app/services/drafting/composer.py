@@ -61,6 +61,8 @@ def _compose_template_draft(bundle: dict, tone: dict) -> str:
     graph_claim_snippets = bundle.get("graph_claim_snippets", [])
     graph_path_snippets = bundle.get("graph_path_snippets", [])
     email_context_snippets = bundle.get("email_context_snippets", [])
+    proposed_next_action = bundle.get("proposed_next_action")
+    opportunity_thread = bundle.get("opportunity_thread") if isinstance(bundle.get("opportunity_thread"), dict) else None
 
     if tone["tone_band"] == "cool_professional":
         opener = f"Hello {display_name},"
@@ -89,7 +91,13 @@ def _compose_template_draft(bundle: dict, tone: dict) -> str:
         context_lines.append(f"Relationship context: {_sanitize_snippet(primary_path)}")
     if context_snippet:
         context_lines.append(f"From our recent thread: {_sanitize_snippet(context_snippet)}")
+    if opportunity_thread:
+        thread_subjects = opportunity_thread.get("recent_subjects") or []
+        if thread_subjects and isinstance(thread_subjects[0], str):
+            context_lines.append(f"I am picking up our thread on \"{thread_subjects[0]}\".")
     context_lines.append(f"I wanted to {objective}.")
+    if isinstance(proposed_next_action, str) and proposed_next_action.strip():
+        context_lines.append(f"Suggested next step: {proposed_next_action.strip()}")
     body = " ".join(context_lines)
 
     closer = "Best,\n[Your Name]"
@@ -115,13 +123,21 @@ def _compose_openai_draft(bundle: dict, tone: dict) -> str | None:
     prompt_payload = {
         "contact_display_name": contact.get("display_name"),
         "objective": bundle.get("objective") or "check in",
+        "retrieval_asof": bundle.get("retrieval_asof"),
         "tone_band": tone.get("tone_band"),
         "recent_interactions": (bundle.get("recent_interactions") or [])[:3],
+        "recent_interactions_global": (bundle.get("recent_interactions_global") or [])[:5],
+        "opportunity_thread": bundle.get("opportunity_thread"),
+        "proposed_next_action": bundle.get("proposed_next_action"),
+        "next_action_rationale": (bundle.get("next_action_rationale") or [])[:6],
+        "graph_focus_terms": (bundle.get("graph_focus_terms") or [])[:10],
+        "motivator_signals": (bundle.get("motivator_signals") or [])[:8],
         "graph_claim_snippets": (bundle.get("graph_claim_snippets") or [])[:5],
         "graph_path_snippets": (bundle.get("graph_path_snippets") or [])[:5],
         "graph_paths": (bundle.get("graph_paths") or [])[:5],
         "graph_metrics": bundle.get("graph_metrics") or {},
-        "email_context_snippets": (bundle.get("email_context_snippets") or [])[:3],
+        "assertion_evidence_trace": (bundle.get("assertion_evidence_trace") or [])[:10],
+        "email_context_snippets": (bundle.get("email_context_snippets") or [])[:4],
     }
     style_instructions = load_combined_writing_style_instructions(tone.get("tone_band"))
     messages = [

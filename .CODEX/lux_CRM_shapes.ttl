@@ -1,0 +1,73 @@
+CALL n10s.validation.shacl.import.inline('
+@prefix sh:   <http://www.w3.org/ns/shacl#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix hs:   <https://luxcrm.ai/ontologies/hubspot-crm#> .
+
+hs:DealShape a sh:NodeShape ;
+  sh:targetClass hs:Deal ;
+  sh:property [
+    sh:path hs:dealForCompany ;
+    sh:class hs:Company ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:severity sh:Violation ;
+    sh:message "Deal must be linked to exactly one Company via hs:dealForCompany." ;
+  ] .
+
+hs:DealInvolvesContactShape a sh:NodeShape ;
+  sh:targetClass hs:Deal ;
+  sh:property [
+    sh:path hs:involvesContact ;
+    sh:class hs:Contact ;
+    sh:minCount 1 ;
+    sh:severity sh:Violation ;
+    sh:message "Deal must involve at least one Contact via hs:involvesContact." ;
+  ] .
+
+hs:EngagementShape a sh:NodeShape ;
+  sh:targetClass hs:Engagement ;
+  sh:property [
+    sh:path hs:occurredAt ;
+    sh:datatype xsd:dateTime ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:severity sh:Violation ;
+    sh:message "Engagement must have exactly one occurredAt (xsd:dateTime)." ;
+  ] ;
+  sh:property [
+    sh:path hs:engagedWith ;
+    sh:class hs:Person ;
+    sh:minCount 1 ;
+    sh:severity sh:Violation ;
+    sh:message "Engagement must have at least one hs:engagedWith participant (Person)." ;
+  ] .
+
+hs:ContactExternalIdShape a sh:NodeShape ;
+  sh:targetClass hs:Contact ;
+  sh:property [
+    sh:path hs:externalId ;
+    sh:datatype xsd:string ;
+    sh:minCount 1 ;
+    sh:severity sh:Violation ;
+    sh:message "Contact must have hs:externalId." ;
+  ] .
+
+hs:CompanyExternalIdShape a sh:NodeShape ;
+  sh:targetClass hs:Company ;
+  sh:property [
+    sh:path hs:externalId ;
+    sh:datatype xsd:string ;
+    sh:minCount 1 ;
+    sh:severity sh:Violation ;
+    sh:message "Company must have hs:externalId." ;
+  ] .
+
+hs:WorksAtRangeShape a sh:NodeShape ;
+  sh:targetClass hs:Person ;
+  sh:property [
+    sh:path hs:worksAt ;
+    sh:class hs:Company ;
+    sh:severity sh:Violation ;
+    sh:message "If hs:worksAt exists, it must reference a Company node." ;
+  ] .
+');

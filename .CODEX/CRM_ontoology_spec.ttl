@@ -1,0 +1,707 @@
+@prefix :        <https://luxcrm.ai/ontologies/hubspot-crm#> .
+@prefix hs:      <https://luxcrm.ai/ontologies/hubspot-crm#> .
+@prefix owl:     <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:     <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:    <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:     <http://www.w3.org/2001/XMLSchema#> .
+@prefix skos:    <http://www.w3.org/2004/02/skos/core#> .
+
+#################################################################
+# Ontology header
+#################################################################
+
+hs: a owl:Ontology ;
+  rdfs:label "HubSpot CRM + Contact Knowledge Graph (Draft)"@en ;
+  rdfs:comment "Draft OWL schema for a contact/lead management KG aligned to HubSpot terms (with Salesforce aliases). Includes canonical CRM layer plus evidence/extraction/assertion layer for text-derived facts."@en .
+
+#################################################################
+# Annotation properties
+#################################################################
+
+hs:sfAlias a owl:AnnotationProperty ;
+  rdfs:label "Salesforce alias"@en ;
+  rdfs:comment "Annotation for Salesforce term(s) corresponding to a HubSpot-oriented class/property."@en .
+
+#################################################################
+# Core CRM classes (HubSpot-oriented; Salesforce terms as aliases)
+#################################################################
+
+### Parties / Actors
+
+hs:CRMRecord a owl:Class ;
+  rdfs:label "CRM Record"@en .
+
+hs:Person a owl:Class ;
+  rdfs:subClassOf hs:CRMRecord ;
+  rdfs:label "Person"@en .
+
+hs:InternalUser a owl:Class ;
+  rdfs:subClassOf hs:Person ;
+  rdfs:label "Internal User"@en ;
+  hs:sfAlias "User" .
+
+hs:ExternalPerson a owl:Class ;
+  rdfs:subClassOf hs:Person ;
+  rdfs:label "External Person"@en .
+
+hs:Contact a owl:Class ;
+  rdfs:subClassOf hs:ExternalPerson ;
+  rdfs:label "Contact"@en ;
+  hs:sfAlias "Contact" .
+
+hs:Lead a owl:Class ;
+  rdfs:subClassOf hs:ExternalPerson ;
+  rdfs:label "Lead"@en ;
+  rdfs:comment "In HubSpot, 'lead' is often a lifecycle stage rather than a distinct object. Keep as a semantic class for extraction & triage."@en ;
+  hs:sfAlias "Lead" .
+
+hs:Organization a owl:Class ;
+  rdfs:subClassOf hs:CRMRecord ;
+  rdfs:label "Organization"@en .
+
+hs:Company a owl:Class ;
+  rdfs:subClassOf hs:Organization ;
+  rdfs:label "Company"@en ;
+  hs:sfAlias "Account" .
+
+hs:Department a owl:Class ;
+  rdfs:subClassOf hs:Organization ;
+  rdfs:label "Department"@en ;
+  rdfs:comment "Optional internal structure node (business unit/division/department)."@en .
+
+### Commercial / Pipeline
+
+hs:CommercialRecord a owl:Class ;
+  rdfs:subClassOf hs:CRMRecord ;
+  rdfs:label "Commercial Record"@en .
+
+hs:Deal a owl:Class ;
+  rdfs:subClassOf hs:CommercialRecord ;
+  rdfs:label "Deal"@en ;
+  hs:sfAlias "Opportunity" .
+
+hs:Quote a owl:Class ;
+  rdfs:subClassOf hs:CommercialRecord ;
+  rdfs:label "Quote"@en ;
+  hs:sfAlias "Quote" .
+
+hs:Contract a owl:Class ;
+  rdfs:subClassOf hs:CommercialRecord ;
+  rdfs:label "Contract"@en ;
+  hs:sfAlias "Contract" .
+
+hs:Product a owl:Class ;
+  rdfs:subClassOf hs:CRMRecord ;
+  rdfs:label "Product"@en ;
+  hs:sfAlias "Product2" .
+
+hs:ServiceOffering a owl:Class ;
+  rdfs:subClassOf hs:CRMRecord ;
+  rdfs:label "Service Offering"@en .
+
+hs:LineItem a owl:Class ;
+  rdfs:subClassOf hs:CRMRecord ;
+  rdfs:label "Line Item"@en ;
+  hs:sfAlias "OpportunityLineItem" .
+
+### Service / Support
+
+hs:SupportRecord a owl:Class ;
+  rdfs:subClassOf hs:CRMRecord ;
+  rdfs:label "Support Record"@en .
+
+hs:Ticket a owl:Class ;
+  rdfs:subClassOf hs:SupportRecord ;
+  rdfs:label "Ticket"@en ;
+  hs:sfAlias "Case" .
+
+### Marketing (optional but included)
+
+hs:MarketingRecord a owl:Class ;
+  rdfs:subClassOf hs:CRMRecord ;
+  rdfs:label "Marketing Record"@en .
+
+hs:Campaign a owl:Class ;
+  rdfs:subClassOf hs:MarketingRecord ;
+  rdfs:label "Campaign"@en ;
+  hs:sfAlias "Campaign" .
+
+hs:LifecycleStage a owl:Class ;
+  rdfs:label "Lifecycle Stage"@en ;
+  rdfs:comment "Typically a property in HubSpot; modeled as a class for controlled values."@en .
+
+### Engagement / Activity (critical for text ingestion)
+
+hs:Engagement a owl:Class ;
+  rdfs:subClassOf hs:CRMRecord ;
+  rdfs:label "Engagement"@en ;
+  rdfs:comment "Umbrella class for interaction records (email, meeting, call, note, task, event/chat) linked to contacts/companies/deals."@en ;
+  hs:sfAlias "Task, Event (Activities)" .
+
+hs:Email a owl:Class ;
+  rdfs:subClassOf hs:Engagement ;
+  rdfs:label "Email"@en .
+
+hs:Meeting a owl:Class ;
+  rdfs:subClassOf hs:Engagement ;
+  rdfs:label "Meeting"@en ;
+  hs:sfAlias "Event" .
+
+hs:Call a owl:Class ;
+  rdfs:subClassOf hs:Engagement ;
+  rdfs:label "Call"@en ;
+  hs:sfAlias "Task (Call-type)" .
+
+hs:Note a owl:Class ;
+  rdfs:subClassOf hs:Engagement ;
+  rdfs:label "Note"@en .
+
+hs:Task a owl:Class ;
+  rdfs:subClassOf hs:Engagement ;
+  rdfs:label "Task"@en ;
+  hs:sfAlias "Task" .
+
+hs:ChatMessage a owl:Class ;
+  rdfs:subClassOf hs:Engagement ;
+  rdfs:label "Chat Message"@en .
+
+hs:File a owl:Class ;
+  rdfs:subClassOf hs:CRMRecord ;
+  rdfs:label "File"@en ;
+  hs:sfAlias "ContentDocument / Attachment" .
+
+#################################################################
+# Reference / semantic classes (useful for extraction & routing)
+#################################################################
+
+hs:Role a owl:Class ;
+  rdfs:label "Role"@en ;
+  rdfs:comment "Job function, buying role, project role."@en .
+
+hs:RoleAssignment a owl:Class ;
+  rdfs:label "Role Assignment"@en ;
+  rdfs:comment "Reifies a role held by a person at an organization (and optionally within a deal context)."@en .
+
+hs:Topic a owl:Class ;
+  rdfs:label "Topic"@en .
+
+hs:Need a owl:Class ;
+  rdfs:label "Need"@en .
+
+hs:PainPoint a owl:Class ;
+  rdfs:label "Pain Point"@en .
+
+hs:UseCase a owl:Class ;
+  rdfs:label "Use Case"@en .
+
+hs:RiskTopic a owl:Class ;
+  rdfs:label "Risk Topic"@en .
+
+hs:Competitor a owl:Class ;
+  rdfs:label "Competitor"@en .
+
+hs:CompetitorProduct a owl:Class ;
+  rdfs:label "Competitor Product"@en .
+
+hs:Geography a owl:Class ;
+  rdfs:label "Geography"@en .
+
+hs:DealStage a owl:Class ;
+  rdfs:label "Deal Stage"@en ;
+  hs:sfAlias "OpportunityStage" .
+
+#################################################################
+# Evidence / provenance / extraction layer
+#################################################################
+
+hs:SourceArtifact a owl:Class ;
+  rdfs:label "Source Artifact"@en ;
+  rdfs:comment "Raw or derived source material (email message, transcript, notes, chat thread, document) used for extraction."@en .
+
+hs:EmailMessage a owl:Class ;
+  rdfs:subClassOf hs:SourceArtifact ;
+  rdfs:label "Email Message (Raw)"@en .
+
+hs:MeetingTranscript a owl:Class ;
+  rdfs:subClassOf hs:SourceArtifact ;
+  rdfs:label "Meeting Transcript"@en .
+
+hs:MeetingNotes a owl:Class ;
+  rdfs:subClassOf hs:SourceArtifact ;
+  rdfs:label "Meeting Notes"@en .
+
+hs:ChatThread a owl:Class ;
+  rdfs:subClassOf hs:SourceArtifact ;
+  rdfs:label "Chat Thread"@en .
+
+hs:Document a owl:Class ;
+  rdfs:subClassOf hs:SourceArtifact ;
+  rdfs:label "Document"@en .
+
+hs:ExtractionEvent a owl:Class ;
+  rdfs:label "Extraction Event"@en ;
+  rdfs:comment "Represents one run of an extractor model over one or more artifacts."@en .
+
+hs:ExtractorModel a owl:Class ;
+  rdfs:label "Extractor Model"@en .
+
+hs:Assertion a owl:Class ;
+  rdfs:label "Assertion"@en ;
+  rdfs:comment "Reified statement (subject, predicate, object) with provenance, attribution, time, confidence, and verification status."@en .
+
+hs:EntityMention a owl:Class ;
+  rdfs:label "Entity Mention"@en .
+
+hs:RelationMention a owl:Class ;
+  rdfs:label "Relation Mention"@en .
+
+hs:ConfidenceScore a owl:Class ;
+  rdfs:label "Confidence Score"@en .
+
+hs:ScoreSnapshot a owl:Class ;
+  rdfs:label "Score Snapshot"@en ;
+  rdfs:comment "Time-stamped scoring snapshot for a contact or deal used by CRM ranking interfaces."@en .
+
+hs:VerificationStatus a owl:Class ;
+  rdfs:label "Verification Status"@en ;
+  rdfs:comment "Controlled values: proposed / verified / rejected."@en .
+
+hs:TemporalScope a owl:Class ;
+  rdfs:label "Temporal Scope"@en ;
+  rdfs:comment "Validity window for an assertion (start/end)."@en .
+
+#################################################################
+# Case / provisional review layer (workflow-native, ontology-managed)
+#################################################################
+
+hs:CaseRecord a owl:Class ;
+  rdfs:subClassOf hs:CRMRecord ;
+  rdfs:label "Case Record"@en ;
+  rdfs:comment "Provisional review object used before promotion into canonical CRM records."@en .
+
+hs:CaseContact a owl:Class ;
+  rdfs:subClassOf hs:Contact, hs:CaseRecord ;
+  rdfs:label "Case Contact"@en ;
+  rdfs:comment "Provisional contact candidate derived from evidence prior to user/system promotion."@en .
+
+hs:CaseOpportunity a owl:Class ;
+  rdfs:subClassOf hs:Deal, hs:CaseRecord ;
+  rdfs:label "Case Opportunity"@en ;
+  rdfs:comment "Provisional deal/opportunity candidate awaiting promotion or rejection."@en .
+
+#################################################################
+# Object properties (relationships)
+#################################################################
+
+### Case / provisional review relationships
+
+hs:targetsContact a owl:ObjectProperty ;
+  rdfs:label "targets contact"@en ;
+  rdfs:domain hs:CaseContact ;
+  rdfs:range hs:Contact .
+
+hs:hasCaseContact a owl:ObjectProperty ;
+  rdfs:label "has case contact"@en ;
+  rdfs:domain hs:Engagement ;
+  rdfs:range hs:CaseContact .
+
+hs:hasCaseOpportunity a owl:ObjectProperty ;
+  rdfs:label "has case opportunity"@en ;
+  rdfs:domain hs:Engagement ;
+  rdfs:range hs:CaseOpportunity .
+
+hs:promotedTo a owl:ObjectProperty ;
+  rdfs:label "promoted to"@en ;
+  rdfs:domain hs:CaseRecord ;
+  rdfs:range hs:CRMRecord .
+
+hs:hasScore a owl:ObjectProperty ;
+  rdfs:label "has score"@en ;
+  rdfs:domain hs:CRMRecord ;
+  rdfs:range hs:ScoreSnapshot .
+
+### Identity / org structure
+
+hs:worksAt a owl:ObjectProperty ;
+  rdfs:label "works at"@en ;
+  rdfs:domain hs:Person ;
+  rdfs:range hs:Organization .
+
+hs:employs a owl:ObjectProperty ;
+  rdfs:label "employs"@en ;
+  rdfs:domain hs:Organization ;
+  rdfs:range hs:Person ;
+  owl:inverseOf hs:worksAt .
+
+hs:subOrganizationOf a owl:ObjectProperty ;
+  rdfs:label "sub-organization of"@en ;
+  rdfs:domain hs:Organization ;
+  rdfs:range hs:Organization .
+
+hs:memberOfDepartment a owl:ObjectProperty ;
+  rdfs:label "member of department"@en ;
+  rdfs:domain hs:Person ;
+  rdfs:range hs:Department .
+
+hs:reportsTo a owl:ObjectProperty ;
+  rdfs:label "reports to"@en ;
+  rdfs:domain hs:InternalUser ;
+  rdfs:range hs:InternalUser .
+
+hs:locatedIn a owl:ObjectProperty ;
+  rdfs:label "located in"@en ;
+  rdfs:domain hs:Organization ;
+  rdfs:range hs:Geography .
+
+### Social / relationship graph
+
+hs:isConnectedTo a owl:ObjectProperty ;
+  rdfs:label "is connected to"@en ;
+  rdfs:domain hs:Person ;
+  rdfs:range hs:Person .
+
+hs:introducedBy a owl:ObjectProperty ;
+  rdfs:label "introduced by"@en ;
+  rdfs:domain hs:Person ;
+  rdfs:range hs:Person .
+
+hs:recommendedBy a owl:ObjectProperty ;
+  rdfs:label "recommended by"@en ;
+  rdfs:domain hs:Person ;
+  rdfs:range hs:Person .
+
+hs:influences a owl:ObjectProperty ;
+  rdfs:label "influences"@en ;
+  rdfs:domain hs:Person ;
+  rdfs:range hs:Person .
+
+### Role assignments
+
+hs:hasRoleAssignment a owl:ObjectProperty ;
+  rdfs:label "has role assignment"@en ;
+  rdfs:domain hs:Person ;
+  rdfs:range hs:RoleAssignment .
+
+hs:roleAtOrganization a owl:ObjectProperty ;
+  rdfs:label "role at organization"@en ;
+  rdfs:domain hs:RoleAssignment ;
+  rdfs:range hs:Organization .
+
+hs:roleType a owl:ObjectProperty ;
+  rdfs:label "role type"@en ;
+  rdfs:domain hs:RoleAssignment ;
+  rdfs:range hs:Role .
+
+hs:roleInDeal a owl:ObjectProperty ;
+  rdfs:label "role in deal"@en ;
+  rdfs:domain hs:RoleAssignment ;
+  rdfs:range hs:Deal .
+
+### Deal / pipeline
+
+hs:dealForCompany a owl:ObjectProperty ;
+  rdfs:label "deal for company"@en ;
+  rdfs:domain hs:Deal ;
+  rdfs:range hs:Company ;
+  hs:sfAlias "Opportunity.AccountId (Opportunity → Account)" .
+
+hs:involvesContact a owl:ObjectProperty ;
+  rdfs:label "involves contact"@en ;
+  rdfs:domain hs:Deal ;
+  rdfs:range hs:Contact .
+
+hs:hasPrimaryContact a owl:ObjectProperty ;
+  rdfs:label "has primary contact"@en ;
+  rdfs:domain hs:Deal ;
+  rdfs:range hs:Contact .
+
+hs:ownedBy a owl:ObjectProperty ;
+  rdfs:label "owned by"@en ;
+  rdfs:domain hs:CRMRecord ;
+  rdfs:range hs:InternalUser ;
+  hs:sfAlias "OwnerId / CreatedById (varies by object)" .
+
+hs:coOwnedBy a owl:ObjectProperty ;
+  rdfs:label "co-owned by"@en ;
+  rdfs:domain hs:Deal ;
+  rdfs:range hs:InternalUser .
+
+hs:hasDealStage a owl:ObjectProperty ;
+  rdfs:label "has deal stage"@en ;
+  rdfs:domain hs:Deal ;
+  rdfs:range hs:DealStage .
+
+hs:hasLineItem a owl:ObjectProperty ;
+  rdfs:label "has line item"@en ;
+  rdfs:domain hs:Deal ;
+  rdfs:range hs:LineItem .
+
+hs:lineItemProduct a owl:ObjectProperty ;
+  rdfs:label "line item product"@en ;
+  rdfs:domain hs:LineItem ;
+  rdfs:range hs:Product .
+
+hs:competesWith a owl:ObjectProperty ;
+  rdfs:label "competes with"@en ;
+  rdfs:domain hs:Deal ;
+  rdfs:range hs:CompetitorProduct .
+
+hs:governedByContract a owl:ObjectProperty ;
+  rdfs:label "governed by contract"@en ;
+  rdfs:domain hs:Deal ;
+  rdfs:range hs:Contract .
+
+### Engagements / activities
+
+hs:engagedWith a owl:ObjectProperty ;
+  rdfs:label "engaged with (participant)"@en ;
+  rdfs:domain hs:Engagement ;
+  rdfs:range hs:Person .
+
+hs:engagedCompany a owl:ObjectProperty ;
+  rdfs:label "engaged company"@en ;
+  rdfs:domain hs:Engagement ;
+  rdfs:range hs:Company .
+
+hs:engagedDeal a owl:ObjectProperty ;
+  rdfs:label "engaged deal"@en ;
+  rdfs:domain hs:Engagement ;
+  rdfs:range hs:Deal .
+
+hs:authoredBy a owl:ObjectProperty ;
+  rdfs:label "authored by"@en ;
+  rdfs:domain hs:Engagement ;
+  rdfs:range hs:Person .
+
+hs:sentTo a owl:ObjectProperty ;
+  rdfs:label "sent to"@en ;
+  rdfs:domain hs:Email ;
+  rdfs:range hs:Person .
+
+hs:ccTo a owl:ObjectProperty ;
+  rdfs:label "cc to"@en ;
+  rdfs:domain hs:Email ;
+  rdfs:range hs:Person .
+
+hs:bccTo a owl:ObjectProperty ;
+  rdfs:label "bcc to"@en ;
+  rdfs:domain hs:Email ;
+  rdfs:range hs:Person .
+
+hs:referencesFile a owl:ObjectProperty ;
+  rdfs:label "references file"@en ;
+  rdfs:domain hs:Engagement ;
+  rdfs:range hs:File .
+
+hs:createsTask a owl:ObjectProperty ;
+  rdfs:label "creates task"@en ;
+  rdfs:domain hs:Engagement ;
+  rdfs:range hs:Task .
+
+### Marketing
+
+hs:memberOfCampaign a owl:ObjectProperty ;
+  rdfs:label "member of campaign"@en ;
+  rdfs:domain hs:Person ;
+  rdfs:range hs:Campaign ;
+  hs:sfAlias "CampaignMember" .
+
+hs:targetedByCampaign a owl:ObjectProperty ;
+  rdfs:label "targeted by campaign"@en ;
+  rdfs:domain hs:Company ;
+  rdfs:range hs:Campaign .
+
+### Support
+
+hs:openedTicket a owl:ObjectProperty ;
+  rdfs:label "opened ticket"@en ;
+  rdfs:domain hs:Person ;
+  rdfs:range hs:Ticket ;
+  hs:sfAlias "Case (created by / contact)" .
+
+hs:ticketForCompany a owl:ObjectProperty ;
+  rdfs:label "ticket for company"@en ;
+  rdfs:domain hs:Ticket ;
+  rdfs:range hs:Company ;
+  hs:sfAlias "Case.AccountId" .
+
+hs:assignedTo a owl:ObjectProperty ;
+  rdfs:label "assigned to"@en ;
+  rdfs:domain hs:Ticket ;
+  rdfs:range hs:InternalUser ;
+  hs:sfAlias "Case.OwnerId" .
+
+### Semantic / extracted (store as Assertions until verified)
+
+hs:interestedIn a owl:ObjectProperty ;
+  rdfs:label "interested in"@en ;
+  rdfs:domain hs:Person ;
+  rdfs:range hs:Topic .
+
+hs:statesNeed a owl:ObjectProperty ;
+  rdfs:label "states need"@en ;
+  rdfs:domain hs:Person ;
+  rdfs:range hs:Need .
+
+hs:hasPainPoint a owl:ObjectProperty ;
+  rdfs:label "has pain point"@en ;
+  rdfs:domain hs:Person ;
+  rdfs:range hs:PainPoint .
+
+hs:riskConcern a owl:ObjectProperty ;
+  rdfs:label "risk concern"@en ;
+  rdfs:domain hs:Person ;
+  rdfs:range hs:RiskTopic .
+
+#################################################################
+# Assertion (reified statement) properties
+#################################################################
+
+hs:assertionSubject a owl:ObjectProperty ;
+  rdfs:label "assertion subject"@en ;
+  rdfs:domain hs:Assertion ;
+  rdfs:range hs:CRMRecord .
+
+hs:assertionPredicate a owl:ObjectProperty ;
+  rdfs:label "assertion predicate"@en ;
+  rdfs:domain hs:Assertion ;
+  rdfs:range owl:ObjectProperty ;
+  rdfs:comment "Points to the predicate (an object property) that the assertion is claiming."@en .
+
+hs:assertionObject a owl:ObjectProperty ;
+  rdfs:label "assertion object"@en ;
+  rdfs:domain hs:Assertion ;
+  rdfs:range owl:Thing .
+
+hs:derivedFromEngagement a owl:ObjectProperty ;
+  rdfs:label "derived from engagement"@en ;
+  rdfs:domain hs:Assertion ;
+  rdfs:range hs:Engagement .
+
+hs:sourceArtifact a owl:ObjectProperty ;
+  rdfs:label "source artifact"@en ;
+  rdfs:domain hs:Assertion ;
+  rdfs:range hs:SourceArtifact .
+
+hs:extractionEvent a owl:ObjectProperty ;
+  rdfs:label "extraction event"@en ;
+  rdfs:domain hs:Assertion ;
+  rdfs:range hs:ExtractionEvent .
+
+hs:attributedTo a owl:ObjectProperty ;
+  rdfs:label "attributed to (speaker/author)"@en ;
+  rdfs:domain hs:Assertion ;
+  rdfs:range hs:Person .
+
+hs:hasVerificationStatus a owl:ObjectProperty ;
+  rdfs:label "has verification status"@en ;
+  rdfs:domain hs:Assertion ;
+  rdfs:range hs:VerificationStatus .
+
+hs:hasTemporalScope a owl:ObjectProperty ;
+  rdfs:label "has temporal scope"@en ;
+  rdfs:domain hs:Assertion ;
+  rdfs:range hs:TemporalScope .
+
+#################################################################
+# Data properties
+#################################################################
+
+hs:externalId a owl:DatatypeProperty ;
+  rdfs:label "external id"@en ;
+  rdfs:domain hs:CRMRecord ;
+  rdfs:range xsd:string ;
+  rdfs:comment "System-of-record ID (e.g., HubSpot object ID or Salesforce Id)."@en .
+
+hs:createdAt a owl:DatatypeProperty ;
+  rdfs:label "created at"@en ;
+  rdfs:domain hs:CRMRecord ;
+  rdfs:range xsd:dateTime .
+
+hs:updatedAt a owl:DatatypeProperty ;
+  rdfs:label "updated at"@en ;
+  rdfs:domain hs:CRMRecord ;
+  rdfs:range xsd:dateTime .
+
+hs:occurredAt a owl:DatatypeProperty ;
+  rdfs:label "occurred at"@en ;
+  rdfs:domain hs:Engagement ;
+  rdfs:range xsd:dateTime .
+
+hs:subjectText a owl:DatatypeProperty ;
+  rdfs:label "subject text"@en ;
+  rdfs:domain hs:Engagement ;
+  rdfs:range xsd:string .
+
+hs:summaryText a owl:DatatypeProperty ;
+  rdfs:label "summary text"@en ;
+  rdfs:domain hs:Engagement ;
+  rdfs:range xsd:string .
+
+hs:confidenceValue a owl:DatatypeProperty ;
+  rdfs:label "confidence value"@en ;
+  rdfs:domain hs:Assertion ;
+  rdfs:range xsd:decimal ;
+  rdfs:comment "0.0–1.0 model confidence for the assertion."@en .
+
+hs:assertedAt a owl:DatatypeProperty ;
+  rdfs:label "asserted at"@en ;
+  rdfs:domain hs:Assertion ;
+  rdfs:range xsd:dateTime .
+
+hs:validFrom a owl:DatatypeProperty ;
+  rdfs:label "valid from"@en ;
+  rdfs:domain hs:TemporalScope ;
+  rdfs:range xsd:dateTime .
+
+hs:validTo a owl:DatatypeProperty ;
+  rdfs:label "valid to"@en ;
+  rdfs:domain hs:TemporalScope ;
+  rdfs:range xsd:dateTime .
+
+#################################################################
+# Controlled values (individuals) — minimal starter set
+#################################################################
+
+# Verification statuses
+hs:proposed a owl:NamedIndividual , hs:VerificationStatus ;
+  rdfs:label "proposed"@en .
+
+hs:verified a owl:NamedIndividual , hs:VerificationStatus ;
+  rdfs:label "verified"@en .
+
+hs:rejected a owl:NamedIndividual , hs:VerificationStatus ;
+  rdfs:label "rejected"@en .
+
+# Deal stages (edit to your pipeline)
+hs:stage_discovery a owl:NamedIndividual , hs:DealStage ;
+  rdfs:label "Discovery"@en ;
+  skos:altLabel "Qualification"@en .
+
+hs:stage_solution a owl:NamedIndividual , hs:DealStage ;
+  rdfs:label "Solution / Proposal"@en ;
+  skos:altLabel "Proposal"@en .
+
+hs:stage_negotiation a owl:NamedIndividual , hs:DealStage ;
+  rdfs:label "Negotiation"@en ;
+  skos:altLabel "Negotiation/Review"@en .
+
+hs:stage_closed_won a owl:NamedIndividual , hs:DealStage ;
+  rdfs:label "Closed Won"@en ;
+  hs:sfAlias "Closed Won" .
+
+hs:stage_closed_lost a owl:NamedIndividual , hs:DealStage ;
+  rdfs:label "Closed Lost"@en ;
+  hs:sfAlias "Closed Lost" .
+
+#################################################################
+# Optional: lightweight equivalence/aliases (non-assertive)
+#################################################################
+
+# Prefer altLabels/aliases instead of owl:equivalentClass to avoid over-committing to vendor semantics.
+hs:Contact skos:altLabel "SF:Contact"@en .
+hs:Company skos:altLabel "SF:Account"@en .
+hs:Deal skos:altLabel "SF:Opportunity"@en .
+hs:Ticket skos:altLabel "SF:Case"@en .
+hs:Task skos:altLabel "SF:Task"@en .
+hs:Meeting skos:altLabel "SF:Event"@en .

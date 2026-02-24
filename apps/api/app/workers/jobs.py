@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import re
 import uuid
 from statistics import mean
 from datetime import datetime, timedelta, timezone
@@ -13,10 +14,26 @@ from sqlalchemy import delete, select
 from app.core.config import get_settings
 from app.db.neo4j.queries import (
     attach_contact_interaction,
+    attach_internal_user_interaction_role,
+    create_assertion_with_evidence_v2,
+    create_extraction_event_v2,
+    find_best_opportunity_for_interaction_v2,
     get_contact_claims,
+    get_contact_company_links,
+    get_contact_context_signals_v2,
     get_contact_graph_metrics,
     get_contact_graph_paths,
+    get_open_case_counts_for_contact,
+    link_opportunity_contacts_v2,
+    link_engagement_to_opportunity_v2,
+    merge_contact,
+    merge_internal_user,
     merge_interaction,
+    run_shacl_validation_v2,
+    run_inference_rules_v2,
+    upsert_case_contact_v2,
+    upsert_case_opportunity_v2,
+    upsert_contact_company_relation,
     upsert_relation_triple,
 )
 from app.db.pg.models import Chunk, ContactCache, Draft, Interaction, RawEvent
@@ -26,6 +43,7 @@ from app.services.chunking.chunk_transcript import chunk_transcript_text
 from app.services.embeddings.vector_store import insert_chunk_embeddings, search_chunks
 from app.services.extraction.cognee_client import extract_candidates
 from app.services.extraction.cognee_mapper import candidates_to_claims, write_claims_with_evidence
+from app.services.identity.internal_users import is_internal_email
 from app.services.memory.contradiction import detect_contradictions
 from app.services.memory.mem0_client import propose_memory_ops
 from app.services.memory.mem0_mapper import build_mem0_bundle
@@ -44,6 +62,49 @@ from app.api.v1.routes.scores import refresh_cached_interaction_summary
 
 logger = logging.getLogger(__name__)
 
+_LOW_SIGNAL_TEXT_TERMS = {
+    "address",
+    "along",
+    "also",
+    "away",
+    "chance",
+    "check",
+    "find",
+    "from",
+    "great",
+    "hello",
+    "hi",
+    "greetings",
+    "thanks",
+    "thank you",
+}
+_PERSISTABLE_GRAPH_CLAIM_TYPES = {
+    "employment",
+    "opportunity",
+    "preference",
+    "commitment",
+    "personal_detail",
+    "family",
+    "education",
+    "location",
+}
+_CASE_OPPORTUNITY_CLAIM_TYPES = {"opportunity", "commitment"}
+_OPPORTUNITY_SUBJECT_KEYWORDS = {
+    "proposal",
+    "pricing",
+    "quote",
+    "budget",
+    "contract",
+    "sow",
+    "scope",
+    "pilot",
+    "workshop",
+    "next step",
+    "next steps",
+    "timeline",
+    "commercial",
+}
+
 
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
@@ -51,23 +112,105 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def _resolve_contact_ids(db, participants_json: dict) -> tuple[list[str], list[str]]:
+def _resolve_contact_ids(db, participants_json: dict) -> tuple[list[str], list[str], dict[str, str], dict[str, str]]:
     emails: list[str] = []
+    display_names_by_email: dict[str, str] = {}
+    internal_names_by_email: dict[str, str] = {}
     for bucket in ("from", "to", "cc"):
         for item in participants_json.get(bucket, []):
             email = (item.get("email") or "").lower()
             if email:
                 emails.append(email)
+                name_value = _normalized_text(item.get("name"))
+                if is_internal_email(email):
+                    if name_value and email not in internal_names_by_email:
+                        internal_names_by_email[email] = name_value
+                    continue
+                if name_value and email not in display_names_by_email:
+                    display_names_by_email[email] = name_value
 
     if not emails:
-        return [], []
+        return [], [], {}, {}
 
     unique_emails = sorted(set(emails))
     contacts = db.scalars(select(ContactCache).where(ContactCache.primary_email.in_(unique_emails))).all()
-    matched_ids = sorted({c.contact_id for c in contacts})
-    matched_emails = {c.primary_email.lower() for c in contacts}
-    unresolved_emails = [email for email in unique_emails if email not in matched_emails]
-    return matched_ids, unresolved_emails
+    matched_ids = sorted({c.contact_id for c in contacts if not is_internal_email(c.primary_email)})
+    matched_emails = {c.primary_email.lower() for c in contacts if not is_internal_email(c.primary_email)}
+    unresolved_emails = [email for email in unique_emails if email not in matched_emails and not is_internal_email(email)]
+    return matched_ids, unresolved_emails, display_names_by_email, internal_names_by_email
+
+
+def _interaction_contact_hint(raw_payload_json: dict | None) -> dict[str, str | None]:
+    payload = raw_payload_json if isinstance(raw_payload_json, dict) else {}
+    contact_id = _normalized_text(payload.get("contact_id")) or None
+    primary_email = _normalized_text(payload.get("primary_email")).lower() or None
+    display_name = _normalized_text(payload.get("contact_display_name")) or None
+    company_name = _normalized_text(payload.get("contact_company")) or None
+    return {
+        "contact_id": contact_id,
+        "primary_email": primary_email,
+        "display_name": display_name,
+        "company_name": company_name,
+    }
+
+
+def _interaction_backfill_mode(raw_payload_json: dict | None) -> str | None:
+    payload = raw_payload_json if isinstance(raw_payload_json, dict) else {}
+    raw_mode = _normalized_text(payload.get("backfill_contact_mode") or payload.get("backfillMode"))
+    if not raw_mode:
+        return None
+    normalized = raw_mode.strip().lower()
+    if normalized in {"skip_previously_processed", "reprocess_all"}:
+        return normalized
+    return None
+
+
+def _seed_or_resolve_hint_contact(
+    db,
+    *,
+    hint_contact_id: str | None,
+    hint_primary_email: str | None,
+    hint_display_name: str | None,
+) -> ContactCache | None:
+    contact: ContactCache | None = None
+    normalized_contact_id = _normalized_text(hint_contact_id) or None
+    normalized_email = _normalized_text(hint_primary_email).lower() or None
+    normalized_display_name = _normalized_text(hint_display_name) or None
+
+    if normalized_contact_id:
+        contact = db.scalar(select(ContactCache).where(ContactCache.contact_id == normalized_contact_id))
+    if contact is None and normalized_email:
+        contact = db.scalar(select(ContactCache).where(ContactCache.primary_email == normalized_email))
+
+    if normalized_email and is_internal_email(normalized_email):
+        return None
+    if contact is not None and is_internal_email(contact.primary_email):
+        return None
+
+    changed = False
+    if contact is None and normalized_contact_id and normalized_email:
+        contact = ContactCache(
+            contact_id=normalized_contact_id,
+            primary_email=normalized_email,
+            display_name=normalized_display_name,
+            owner_user_id=None,
+            use_sensitive_in_drafts=False,
+        )
+        db.add(contact)
+        changed = True
+    elif contact is not None:
+        if normalized_email and contact.primary_email != normalized_email:
+            contact.primary_email = normalized_email
+            changed = True
+        if normalized_display_name and not _normalized_text(contact.display_name):
+            contact.display_name = normalized_display_name
+            changed = True
+
+    if changed:
+        db.commit()
+        db.refresh(contact)
+
+    return contact
 
 
 def _create_chunks_for_interaction(interaction: Interaction, text: str) -> list[Chunk]:
@@ -191,6 +334,81 @@ def _normalized_text(value: object) -> str:
     return " ".join(value.split()).strip()
 
 
+def _normalized_compact(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", _normalized_text(value).lower()).strip()
+
+
+def _claim_type_name(claim: dict[str, Any]) -> str:
+    return _normalized_text(claim.get("claim_type")).lower()
+
+
+def _claim_value_text(claim: dict[str, Any]) -> str:
+    value_json = claim.get("value_json") if isinstance(claim.get("value_json"), dict) else {}
+    return (
+        _normalized_text(value_json.get("object"))
+        or _normalized_text(value_json.get("company"))
+        or _normalized_text(value_json.get("label"))
+        or _normalized_text(value_json.get("target"))
+        or _normalized_text(value_json.get("destination"))
+    )
+
+
+def _is_low_signal_text(value: object) -> bool:
+    text = _normalized_text(value)
+    if not text:
+        return True
+    raw_tokens = re.findall(r"[A-Za-z0-9]+", text)
+    compact = _normalized_compact(text)
+    if not compact:
+        return True
+    if compact in _LOW_SIGNAL_TEXT_TERMS:
+        return True
+    tokens = [tok for tok in compact.split(" ") if tok]
+    if len(tokens) == 1:
+        token = tokens[0]
+        raw_token = raw_tokens[0] if len(raw_tokens) == 1 else token
+        if token in _LOW_SIGNAL_TEXT_TERMS:
+            return True
+        if token.isalpha() and len(token) <= 3:
+            # Keep short mixed/upper-case acronyms (e.g., PwC, IBM) as valid signals.
+            if isinstance(raw_token, str) and any(ch.isupper() for ch in raw_token):
+                return False
+            return True
+    return False
+
+
+def _is_persistable_graph_claim(claim: dict[str, Any]) -> bool:
+    claim_type = _claim_type_name(claim)
+    if not claim_type:
+        return False
+    if claim_type not in _PERSISTABLE_GRAPH_CLAIM_TYPES:
+        return False
+    text = _claim_value_text(claim)
+    if not text:
+        return False
+    if claim_type in {"opportunity", "commitment", "preference"} and _is_low_signal_text(text):
+        return False
+    return True
+
+
+def _claim_ontology_supported(claim: dict[str, Any]) -> bool:
+    if "ontology_supported" not in claim:
+        return True
+    return bool(claim.get("ontology_supported"))
+
+
+def _is_crm_promotable_claim(claim: dict[str, Any]) -> bool:
+    return _is_persistable_graph_claim(claim) and _claim_ontology_supported(claim)
+
+
+def _filter_graph_claims(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [claim for claim in claims if isinstance(claim, dict) and _is_persistable_graph_claim(claim)]
+
+
+def _filter_crm_promotable_claims(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [claim for claim in claims if isinstance(claim, dict) and _is_crm_promotable_claim(claim)]
+
+
 def _claim_identity(claim: dict[str, object]) -> tuple[str, str]:
     claim_id = _normalized_text(claim.get("claim_id"))
     claim_type = _normalized_text(claim.get("claim_type")).lower() or "topic"
@@ -255,6 +473,8 @@ def _persist_relation_claims_for_contact(
     interaction_iso = _as_utc(interaction.timestamp).isoformat()
 
     for claim in claims:
+        if not _is_crm_promotable_claim(claim):
+            continue
         claim_id = _normalized_text(claim.get("claim_id"))
         if not claim_id or claim_id in seen_claim_ids:
             continue
@@ -332,9 +552,16 @@ def _persist_relation_claims_for_contact(
     }
 
 
-def _hybrid_graph_vector_signals(db, contact_id: str, objective_seed: str) -> tuple[dict[str, int], float, list[dict]]:
+def _hybrid_graph_vector_signals(db, contact_id: str, objective_seed: str) -> tuple[dict[str, Any], float, list[dict]]:
     graph_metrics = get_contact_graph_metrics(contact_id)
-    graph_paths = get_contact_graph_paths(contact_id, objective=objective_seed, max_hops=3, limit=6, include_uncertain=False)
+    graph_paths = get_contact_graph_paths(
+        contact_id,
+        objective=objective_seed,
+        max_hops=3,
+        limit=6,
+        include_uncertain=False,
+        lookback_days=365,
+    )
     graph_query = " ".join(
         path.get("path_text", "")
         for path in graph_paths
@@ -351,6 +578,88 @@ def _hybrid_graph_vector_signals(db, contact_id: str, objective_seed: str) -> tu
     return graph_metrics, vector_alignment, graph_paths
 
 
+def _extract_company_hint_from_claims(claims: list[dict]) -> str | None:
+    for claim in claims:
+        if not _claim_ontology_supported(claim):
+            continue
+        claim_type = _claim_type_name(claim)
+        if claim_type not in {"employment", "opportunity", "commitment"}:
+            continue
+        value_json = claim.get("value_json") if isinstance(claim.get("value_json"), dict) else {}
+        for key in ("company", "organization", "org", "target", "destination", "object"):
+            value = value_json.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            candidate = value.strip()
+            if _is_low_signal_text(candidate):
+                continue
+            return candidate
+    return None
+
+
+def _extract_opportunity_title(interaction: Interaction, claims: list[dict]) -> str:
+    for claim in claims:
+        claim_type = _claim_type_name(claim)
+        if claim_type not in {"opportunity", "commitment"}:
+            continue
+        value_json = claim.get("value_json") if isinstance(claim.get("value_json"), dict) else {}
+        for key in ("object", "label", "target"):
+            value = value_json.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            candidate = value.strip()
+            if _is_low_signal_text(candidate):
+                continue
+            return candidate[:160]
+    subject = _normalized_text(interaction.subject)
+    if subject and not _is_low_signal_text(subject):
+        return subject[:160]
+    return "Autodiscovered opportunity"
+
+
+def _extract_motivator_signals(claims: list[dict]) -> list[str]:
+    motivator_types = {"preference", "commitment", "opportunity", "personal_detail", "family", "education", "location"}
+    signals: list[str] = []
+    for claim in claims:
+        if not _claim_ontology_supported(claim) and _claim_type_name(claim) == "topic":
+            continue
+        claim_type = _claim_type_name(claim)
+        if claim_type not in motivator_types:
+            continue
+        value_json = claim.get("value_json") if isinstance(claim.get("value_json"), dict) else {}
+        text = (
+            _normalized_text(value_json.get("object"))
+            or _normalized_text(value_json.get("label"))
+            or _normalized_text(value_json.get("company"))
+            or _normalized_text(value_json.get("predicate"))
+        )
+        if not text or _is_low_signal_text(text) or text in signals:
+            continue
+        signals.append(text)
+        if len(signals) >= 8:
+            break
+    return signals
+
+
+def _has_case_opportunity_signal(interaction: Interaction, claims: list[dict]) -> bool:
+    for claim in claims:
+        if not _claim_ontology_supported(claim) and _claim_type_name(claim) == "topic":
+            continue
+        claim_type = _claim_type_name(claim)
+        if claim_type not in _CASE_OPPORTUNITY_CLAIM_TYPES:
+            continue
+        text = _claim_value_text(claim)
+        if text and not _is_low_signal_text(text):
+            return True
+
+    subject = _normalized_text(interaction.subject).lower()
+    if subject:
+        for keyword in _OPPORTUNITY_SUBJECT_KEYWORDS:
+            if keyword in subject:
+                return True
+    return False
+
+
 def process_interaction(interaction_id: str) -> None:
     settings = get_settings()
     db = SessionLocal()
@@ -359,6 +668,7 @@ def process_interaction(interaction_id: str) -> None:
         interaction = db.scalar(select(Interaction).where(Interaction.interaction_id == interaction_id))
         if interaction is None:
             return
+        interaction.processing_error = None
 
         raw_event = db.scalar(
             select(RawEvent)
@@ -368,11 +678,96 @@ def process_interaction(interaction_id: str) -> None:
             )
         )
         body_text = ""
+        raw_payload_json: dict[str, Any] = {}
         if raw_event:
-            body_text = raw_event.payload_json.get("body_plain", "")
+            raw_payload_json = raw_event.payload_json if isinstance(raw_event.payload_json, dict) else {}
+            body_text = raw_payload_json.get("body_plain", "")
+        backfill_contact_mode = _interaction_backfill_mode(raw_payload_json)
+        skip_mem0_for_backfill = bool(
+            interaction.source_system == "gmail"
+            and backfill_contact_mode in {"skip_previously_processed", "reprocess_all"}
+        )
 
-        contact_ids, unresolved_emails = _resolve_contact_ids(db, interaction.participants_json)
-        interaction.contact_ids_json = contact_ids
+        hint = _interaction_contact_hint(raw_payload_json)
+        hint_primary_email = _normalized_text(hint.get("primary_email")).lower() or None
+        if hint_primary_email and is_internal_email(hint_primary_email):
+            hint = {"contact_id": None, "primary_email": None, "display_name": None, "company_name": None}
+            hinted_contact = None
+        else:
+            hinted_contact = _seed_or_resolve_hint_contact(
+                db,
+                hint_contact_id=hint.get("contact_id"),
+                hint_primary_email=hint.get("primary_email"),
+                hint_display_name=hint.get("display_name"),
+            )
+
+        contact_ids, unresolved_emails, participant_names, internal_participant_names = _resolve_contact_ids(
+            db, interaction.participants_json
+        )
+        hinted_contact_id = hinted_contact.contact_id if hinted_contact else (_normalized_text(hint.get("contact_id")) or None)
+        hinted_email = _normalized_text(hint.get("primary_email")).lower() or None
+        if hinted_contact_id and hinted_contact_id not in contact_ids:
+            contact_ids = sorted(set(contact_ids + [hinted_contact_id]))
+        if hinted_email:
+            unresolved_emails = [email for email in unresolved_emails if email != hinted_email]
+            if hinted_contact_id and hint.get("display_name") and hinted_email not in participant_names:
+                participant_names[hinted_email] = _normalized_text(hint.get("display_name"))
+
+        hinted_company_name = _normalized_text(hint.get("company_name"))
+        if hinted_contact_id and hinted_company_name:
+            existing_company_links = get_contact_company_links(hinted_contact_id)
+            contact_sync_companies = [
+                _normalized_text(item.get("company_name"))
+                for item in existing_company_links
+                if _normalized_text(item.get("source")) == "contact_sync" and _normalized_text(item.get("company_name"))
+            ]
+            should_apply_backfill_company_hint = True
+            if contact_sync_companies:
+                normalized_hint_company = hinted_company_name.casefold()
+                if any(company.casefold() == normalized_hint_company for company in contact_sync_companies):
+                    should_apply_backfill_company_hint = False
+                else:
+                    should_apply_backfill_company_hint = False
+                    logger.info(
+                        "Skipping backfill company hint because contact_sync company already exists.",
+                        extra={
+                            "contact_id": hinted_contact_id,
+                            "hint_company": hinted_company_name,
+                            "contact_sync_companies": contact_sync_companies,
+                            "interaction_id": interaction.interaction_id,
+                        },
+                    )
+            if should_apply_backfill_company_hint:
+                resolved_email = (
+                    _normalized_text(hinted_contact.primary_email).lower()
+                    if hinted_contact and hinted_contact.primary_email
+                    else hinted_email
+                    or ""
+                )
+                resolved_display_name = (
+                    _normalized_text(hinted_contact.display_name)
+                    if hinted_contact and hinted_contact.display_name
+                    else _normalized_text(hint.get("display_name"))
+                    or participant_names.get(hinted_email or "", None)
+                )
+                merge_contact(
+                    {
+                        "contact_id": hinted_contact_id,
+                        "primary_email": resolved_email,
+                        "display_name": resolved_display_name or None,
+                        "first_name": None,
+                        "last_name": None,
+                        "company": hinted_company_name or None,
+                        "owner_user_id": None,
+                    }
+                )
+                upsert_contact_company_relation(
+                    contact_id=hinted_contact_id,
+                    company_name=hinted_company_name,
+                    source_system="contact_sheet_backfill_hint",
+                    confidence=0.99,
+                )
+        provisional_contact_ids: list[str] = []
         merge_interaction(
             {
                 "interaction_id": interaction.interaction_id,
@@ -380,20 +775,67 @@ def process_interaction(interaction_id: str) -> None:
                 "timestamp": interaction.timestamp.isoformat(),
                 "source_system": interaction.source_system,
                 "direction": interaction.direction,
+                "thread_id": interaction.thread_id,
+                "subject": interaction.subject,
             }
         )
-        for contact_id in contact_ids:
-            attach_contact_interaction(contact_id, interaction.interaction_id)
+
+        seen_internal_pairs: set[tuple[str, str]] = set()
+        for bucket in ("from", "to", "cc"):
+            for participant in interaction.participants_json.get(bucket, []):
+                participant_email = _normalized_text(participant.get("email")).lower()
+                if not participant_email or not is_internal_email(participant_email):
+                    continue
+                merge_internal_user(
+                    {
+                        "internal_user_id": None,
+                        "primary_email": participant_email,
+                        "display_name": internal_participant_names.get(participant_email)
+                        or _normalized_text(participant.get("name"))
+                        or None,
+                    }
+                )
+                pair = (participant_email, bucket)
+                if pair in seen_internal_pairs:
+                    continue
+                seen_internal_pairs.add(pair)
+                attach_internal_user_interaction_role(participant_email, interaction.interaction_id, bucket)
 
         for email in unresolved_emails:
-            create_identity_resolution_task(
-                db,
+            case_contact = upsert_case_contact_v2(
                 email=email,
-                payload_json={
-                    "interaction_id": interaction.interaction_id,
+                interaction_id=interaction.interaction_id,
+                display_name=participant_names.get(email),
+                promotion_reason="auto_discovered_from_interaction",
+                gate_results={
+                    "is_internal_email": False,
+                    "autocreate": True,
                     "source_system": interaction.source_system,
                 },
             )
+            provisional_contact_id = _normalized_text(case_contact.get("provisional_contact_id"))
+            if provisional_contact_id:
+                provisional_contact_ids.append(provisional_contact_id)
+                existing_cache = db.scalar(select(ContactCache).where(ContactCache.contact_id == provisional_contact_id))
+                if existing_cache is None:
+                    db.add(
+                        ContactCache(
+                            contact_id=provisional_contact_id,
+                            primary_email=email,
+                            display_name=participant_names.get(email),
+                            owner_user_id=None,
+                            use_sensitive_in_drafts=False,
+                        )
+                    )
+                else:
+                    existing_cache.primary_email = email
+                    if participant_names.get(email):
+                        existing_cache.display_name = participant_names.get(email)
+
+        all_contact_ids = sorted(set(contact_ids + provisional_contact_ids))
+        interaction.contact_ids_json = all_contact_ids
+        for contact_id in all_contact_ids:
+            attach_contact_interaction(contact_id, interaction.interaction_id)
 
         chunks = _create_chunks_for_interaction(interaction, body_text)
         for chunk in chunks:
@@ -407,22 +849,44 @@ def process_interaction(interaction_id: str) -> None:
 
         try:
             candidates = extract_candidates(interaction.interaction_id, body_text)
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "interaction_cognee_extraction_failed",
                 extra={"interaction_id": interaction.interaction_id},
             )
-            candidates = {
-                "interaction_id": interaction.interaction_id,
-                "entities": [],
-                "relations": [],
-                "topics": [],
-                "signature": "",
-            }
+            create_extraction_event_v2(
+                interaction_id=interaction.interaction_id,
+                stage="interaction_processing",
+                status="failed",
+                extractor="cognee",
+                source_system=interaction.source_system,
+                error_message=str(exc),
+            )
+            create_resolution_task(
+                db,
+                contact_id=all_contact_ids[0] if all_contact_ids else "",
+                task_type="extraction_failure",
+                proposed_claim_id=f"extract_fail:{interaction.interaction_id}",
+                current_claim_id=None,
+                payload_json={
+                    "interaction_id": interaction.interaction_id,
+                    "source_system": interaction.source_system,
+                    "entity_status": "rejected",
+                    "promotion_reason": "extraction_failed",
+                    "gate_results": {
+                        "stage": "extract_candidates",
+                        "error": str(exc),
+                    },
+                },
+            )
+            raise RuntimeError(f"Cognee extraction failed for interaction {interaction.interaction_id}") from exc
         proposed_claims = candidates_to_claims(candidates)
+        graph_claim_candidates = _filter_graph_claims(proposed_claims)
+        crm_promotable_claim_candidates = _filter_crm_promotable_claims(graph_claim_candidates)
 
         evidence_refs = [
             {
+                "interaction_id": interaction.interaction_id,
                 "chunk_id": c.chunk_id,
                 "span_json": c.span_json,
                 "quote_hash": f"{c.chunk_id}:{len(c.text)}",
@@ -430,9 +894,55 @@ def process_interaction(interaction_id: str) -> None:
             for c in chunks[:3]
         ]
 
-        for contact_id in contact_ids:
+        if settings.graph_v2_enabled:
+            company_hint = _extract_company_hint_from_claims(crm_promotable_claim_candidates)
+            opportunity_title = _extract_opportunity_title(interaction, graph_claim_candidates)
+            motivator_signals = _extract_motivator_signals(graph_claim_candidates)
+            if _has_case_opportunity_signal(interaction, graph_claim_candidates):
+                best_opportunity = find_best_opportunity_for_interaction_v2(
+                    thread_id=interaction.thread_id,
+                    company_name=company_hint,
+                    contact_ids=all_contact_ids,
+                )
+                if best_opportunity and best_opportunity.get("meets_threshold"):
+                    opportunity_id = str(best_opportunity.get("opportunity_id"))
+                    link_engagement_to_opportunity_v2(
+                        interaction_id=interaction.interaction_id,
+                        opportunity_id=opportunity_id,
+                        source="matcher_v2",
+                        score=float(best_opportunity.get("score", 0.0) or 0.0),
+                    )
+                    link_opportunity_contacts_v2(opportunity_id, all_contact_ids)
+                else:
+                    upsert_case_opportunity_v2(
+                        interaction_id=interaction.interaction_id,
+                        title=opportunity_title,
+                        company_name=company_hint,
+                        thread_id=interaction.thread_id,
+                        promotion_reason="insufficient_match_to_existing_opportunity",
+                        gate_results={
+                            "entity_status": "provisional",
+                            "promotion_reason": "insufficient_match_to_existing_opportunity",
+                            "match_threshold": settings.graph_v2_case_opportunity_threshold,
+                            "best_match": best_opportunity,
+                            "case_gate": "passed",
+                        },
+                        motivators=motivator_signals,
+                        contact_ids=all_contact_ids,
+                    )
+            else:
+                logger.info(
+                    "case_opportunity_skipped_low_signal",
+                    extra={
+                        "interaction_id": interaction.interaction_id,
+                        "subject": interaction.subject,
+                        "contact_ids": all_contact_ids,
+                    },
+                )
+
+        for contact_id in all_contact_ids:
             prepared_candidates = []
-            for claim in proposed_claims:
+            for claim in graph_claim_candidates:
                 claim_copy = copy.deepcopy(claim)
                 base_claim_id = _normalized_text(claim_copy.get("claim_id")) or str(uuid.uuid4())
                 claim_copy["claim_id"] = _scope_claim_id(
@@ -450,8 +960,38 @@ def process_interaction(interaction_id: str) -> None:
                 ]
                 prepared_candidates.append(claim_copy)
 
-            if prepared_candidates:
+            if prepared_candidates and not evidence_refs:
+                create_resolution_task(
+                    db,
+                    contact_id=contact_id,
+                    task_type="missing_evidence",
+                    proposed_claim_id=f"missing_evidence:{interaction.interaction_id}:{contact_id}",
+                    current_claim_id=None,
+                    payload_json={
+                        "interaction_id": interaction.interaction_id,
+                        "contact_id": contact_id,
+                        "entity_status": "rejected",
+                        "promotion_reason": "missing_evidence_refs",
+                        "gate_results": {"required_fields": ["interaction_id", "chunk_id", "span_json"]},
+                    },
+                )
+
+            if prepared_candidates and evidence_refs:
                 write_claims_with_evidence(contact_id, interaction.interaction_id, prepared_candidates, evidence_refs)
+                for claim in prepared_candidates:
+                    create_assertion_with_evidence_v2(
+                        interaction_id=interaction.interaction_id,
+                        contact_id=contact_id,
+                        claim=claim,
+                        evidence_refs=evidence_refs,
+                        source_system="cognee",
+                        extractor="cognee",
+                        entity_status="provisional",
+                        gate_results={
+                            "stage": "cognee_claims",
+                            "has_required_evidence": True,
+                        },
+                    )
             graph_relation_stats_cognee = _persist_relation_claims_for_contact(
                 db=db,
                 contact_id=contact_id,
@@ -461,30 +1001,41 @@ def process_interaction(interaction_id: str) -> None:
             )
 
             accepted_claims_after_cognee = get_contact_claims(contact_id, status="accepted")
-            bundle = build_mem0_bundle(
-                interaction_summary=_summarize_interaction_body(body_text),
-                recent_claims=accepted_claims_after_cognee,
-                candidate_claims=prepared_candidates,
-                auto_accept_threshold=settings.auto_accept_threshold,
-                scope_ids={
-                    "user_id": contact_id,
-                    "agent_id": settings.mem0_agent_id,
-                    "run_id": interaction.interaction_id,
-                    "contact_id": contact_id,
-                    "interaction_id": interaction.interaction_id,
-                },
-            )
-            try:
-                ops = propose_memory_ops(bundle)
-            except Exception:
-                logger.exception(
-                    "interaction_mem0_ops_failed",
+            if skip_mem0_for_backfill:
+                logger.info(
+                    "interaction_mem0_skipped_for_backfill",
                     extra={
                         "interaction_id": interaction.interaction_id,
                         "contact_id": contact_id,
+                        "backfill_contact_mode": backfill_contact_mode,
                     },
                 )
                 ops = []
+            else:
+                bundle = build_mem0_bundle(
+                    interaction_summary=_summarize_interaction_body(body_text),
+                    recent_claims=accepted_claims_after_cognee,
+                    candidate_claims=prepared_candidates,
+                    auto_accept_threshold=settings.auto_accept_threshold,
+                    scope_ids={
+                        "user_id": contact_id,
+                        "agent_id": settings.mem0_agent_id,
+                        "run_id": interaction.interaction_id,
+                        "contact_id": contact_id,
+                        "interaction_id": interaction.interaction_id,
+                    },
+                )
+                try:
+                    ops = propose_memory_ops(bundle)
+                except Exception:
+                    logger.exception(
+                        "interaction_mem0_ops_failed",
+                        extra={
+                            "interaction_id": interaction.interaction_id,
+                            "contact_id": contact_id,
+                        },
+                    )
+                    ops = []
             new_claims = _claims_from_ops(
                 ops,
                 evidence_refs,
@@ -492,8 +1043,24 @@ def process_interaction(interaction_id: str) -> None:
                 contact_id,
             )
             new_claims = _dedupe_claims(prepared_candidates, new_claims)
-            if new_claims:
+            new_claims = _filter_graph_claims(new_claims)
+            new_claims_crm_promotable = _filter_crm_promotable_claims(new_claims)
+            if new_claims and evidence_refs:
                 write_claims_with_evidence(contact_id, interaction.interaction_id, new_claims, evidence_refs)
+                for claim in new_claims:
+                    create_assertion_with_evidence_v2(
+                        interaction_id=interaction.interaction_id,
+                        contact_id=contact_id,
+                        claim=claim,
+                        evidence_refs=evidence_refs,
+                        source_system="mem0",
+                        extractor="mem0",
+                        entity_status="provisional",
+                        gate_results={
+                            "stage": "mem0_claims",
+                            "has_required_evidence": True,
+                        },
+                    )
 
             contradictions = detect_contradictions(accepted_claims_after_cognee, new_claims)
             for issue in contradictions:
@@ -514,7 +1081,7 @@ def process_interaction(interaction_id: str) -> None:
                 db=db,
                 contact_id=contact_id,
                 interaction=interaction,
-                claims=new_claims,
+                claims=new_claims_crm_promotable,
                 auto_accept_threshold=settings.auto_accept_threshold,
             )
             graph_relation_stats = _merge_relation_stats(graph_relation_stats_cognee, graph_relation_stats_mem0)
@@ -547,9 +1114,17 @@ def process_interaction(interaction_id: str) -> None:
                 if part
             ) or "relationship follow up"
             graph_metrics, vector_alignment, graph_paths = _hybrid_graph_vector_signals(db, contact_id, objective_seed)
+            context_signals_v2 = get_contact_context_signals_v2(contact_id, limit=10) if settings.graph_v2_enabled else []
+            open_case_counts = get_open_case_counts_for_contact(contact_id) if settings.graph_v2_enabled else {
+                "open_case_contacts": 0,
+                "open_case_opportunities": 0,
+            }
+            motivator_signal_count = sum(
+                1 for signal in context_signals_v2 if _normalized_text(signal.get("claim_type")) in {"preference", "opportunity", "commitment"}
+            )
             graph_warmth_bonus = min(
                 5.0,
-                graph_metrics.get("recent_relation_count", 0) * 0.35 + vector_alignment * 4.0,
+                graph_metrics.get("recent_relation_count", 0) * 0.35 + vector_alignment * 4.0 + motivator_signal_count * 0.25,
             )
             graph_depth_bonus = min(
                 10,
@@ -557,14 +1132,16 @@ def process_interaction(interaction_id: str) -> None:
                     round(
                         graph_metrics.get("entity_reach_2hop", 0) * 0.40
                         + graph_metrics.get("path_count_2hop", 0) * 0.20
+                        + len(context_signals_v2) * 0.30
                     )
                 ),
             )
             graph_trigger_bonus = min(
                 8.0,
-                graph_metrics.get("opportunity_edge_count", 0) * 1.5
+                graph_metrics.get("recent_opportunity_edge_count", 0) * 1.8
                 + graph_metrics.get("recent_relation_count", 0) * 0.25
-                + graph_metrics.get("uncertain_relation_count", 0) * 0.35,
+                + graph_metrics.get("uncertain_relation_count", 0) * 0.35
+                - graph_metrics.get("stale_opportunity_edge_count", 0) * 0.35,
             )
             warmth_for_score = warmth_delta + graph_warmth_bonus
             depth_for_score = depth_count
@@ -589,6 +1166,7 @@ def process_interaction(interaction_id: str) -> None:
             relationship_components["graph_path_count_2hop"] = int(graph_metrics.get("path_count_2hop", 0))
             relationship_components["graph_entity_reach_2hop"] = int(graph_metrics.get("entity_reach_2hop", 0))
             relationship_components["graph_relation_count"] = int(graph_metrics.get("direct_relation_count", 0))
+            relationship_components["graph_latest_relation_at"] = graph_metrics.get("latest_relation_at")
             relationship_components["graph_path_samples"] = [
                 path.get("path_text")
                 for path in graph_paths[:3]
@@ -601,6 +1179,12 @@ def process_interaction(interaction_id: str) -> None:
                 open_loops=open_loops,
                 trigger_score=trigger_for_score,
             )
+            open_case_penalty = min(
+                15.0,
+                open_case_counts.get("open_case_contacts", 0) * 1.5
+                + open_case_counts.get("open_case_opportunities", 0) * 2.5,
+            )
+            priority = max(0.0, round(priority - open_case_penalty, 2))
             priority_components["inactivity_days"] = inactivity_days
             priority_components["open_loop_count"] = open_loops
             priority_components["trigger_score"] = trigger_score
@@ -608,7 +1192,12 @@ def process_interaction(interaction_id: str) -> None:
             priority_components["graph_recent_relation_count"] = int(graph_metrics.get("recent_relation_count", 0))
             priority_components["graph_uncertain_relation_count"] = int(graph_metrics.get("uncertain_relation_count", 0))
             priority_components["graph_opportunity_edge_count"] = int(graph_metrics.get("opportunity_edge_count", 0))
+            priority_components["graph_recent_opportunity_edge_count"] = int(graph_metrics.get("recent_opportunity_edge_count", 0))
+            priority_components["graph_stale_opportunity_edge_count"] = int(graph_metrics.get("stale_opportunity_edge_count", 0))
             priority_components["graph_priority_trigger_input"] = round(trigger_for_score, 3)
+            priority_components["open_case_penalty"] = round(open_case_penalty, 3)
+            priority_components["open_case_contacts"] = int(open_case_counts.get("open_case_contacts", 0))
+            priority_components["open_case_opportunities"] = int(open_case_counts.get("open_case_opportunities", 0))
             priority_components["last_interaction_id"] = last_interaction.interaction_id if last_interaction else None
             persist_score_snapshot(
                 contact_id=contact_id,
@@ -622,6 +1211,7 @@ def process_interaction(interaction_id: str) -> None:
                         "metrics": graph_metrics,
                         "paths": graph_paths[:4],
                         "relation_persistence": graph_relation_stats,
+                        "context_signals_v2": context_signals_v2[:8],
                     },
                 },
             )
@@ -633,13 +1223,33 @@ def process_interaction(interaction_id: str) -> None:
                     extra={"contact_id": contact_id, "interaction_id": interaction.interaction_id},
                 )
 
+        if settings.shacl_validation_enabled and settings.shacl_validation_on_write:
+            shacl_result = run_shacl_validation_v2(interaction_id=interaction.interaction_id)
+            if shacl_result.get("enabled") and not shacl_result.get("valid", False):
+                create_resolution_task(
+                    db,
+                    contact_id=all_contact_ids[0] if all_contact_ids else "",
+                    task_type="shacl_validation_failure",
+                    proposed_claim_id=f"shacl_fail:{interaction.interaction_id}",
+                    current_claim_id=None,
+                    payload_json={
+                        "interaction_id": interaction.interaction_id,
+                        "entity_status": "rejected",
+                        "promotion_reason": "shacl_validation_failure",
+                        "gate_results": shacl_result,
+                    },
+                )
+                raise RuntimeError(f"SHACL validation failed for interaction {interaction.interaction_id}")
+
         interaction.status = "processed"
+        interaction.processing_error = None
         db.commit()
-    except Exception:
+    except Exception as exc:
         db.rollback()
         if interaction is not None:
             try:
                 interaction.status = "failed"
+                interaction.processing_error = str(exc)[:4000]
                 db.commit()
             except Exception:
                 db.rollback()
@@ -690,6 +1300,7 @@ def process_news(interaction_id: str) -> None:
 
 
 def recompute_scores() -> None:
+    settings = get_settings()
     db = SessionLocal()
     try:
         contacts = db.scalars(select(ContactCache)).all()
@@ -713,9 +1324,19 @@ def recompute_scores() -> None:
                 value for value in [_normalized_text(contact.display_name), _normalized_text(contact.primary_email)] if value
             ) or "relationship follow up"
             graph_metrics, vector_alignment, graph_paths = _hybrid_graph_vector_signals(db, contact.contact_id, objective_seed)
+            context_signals_v2 = get_contact_context_signals_v2(contact.contact_id, limit=10) if settings.graph_v2_enabled else []
+            open_case_counts = get_open_case_counts_for_contact(contact.contact_id) if settings.graph_v2_enabled else {
+                "open_case_contacts": 0,
+                "open_case_opportunities": 0,
+            }
+            motivator_signal_count = sum(
+                1
+                for signal in context_signals_v2
+                if _normalized_text(signal.get("claim_type")) in {"preference", "opportunity", "commitment"}
+            )
             graph_warmth_bonus = min(
                 5.0,
-                graph_metrics.get("recent_relation_count", 0) * 0.35 + vector_alignment * 4.0,
+                graph_metrics.get("recent_relation_count", 0) * 0.35 + vector_alignment * 4.0 + motivator_signal_count * 0.25,
             )
             graph_depth_bonus = min(
                 10,
@@ -723,14 +1344,16 @@ def recompute_scores() -> None:
                     round(
                         graph_metrics.get("entity_reach_2hop", 0) * 0.40
                         + graph_metrics.get("path_count_2hop", 0) * 0.20
+                        + len(context_signals_v2) * 0.30
                     )
                 ),
             )
             graph_trigger_bonus = min(
                 8.0,
-                graph_metrics.get("opportunity_edge_count", 0) * 1.5
+                graph_metrics.get("recent_opportunity_edge_count", 0) * 1.8
                 + graph_metrics.get("recent_relation_count", 0) * 0.25
-                + graph_metrics.get("uncertain_relation_count", 0) * 0.35,
+                + graph_metrics.get("uncertain_relation_count", 0) * 0.35
+                - graph_metrics.get("stale_opportunity_edge_count", 0) * 0.35,
             )
             warmth_for_score = warmth_delta + graph_warmth_bonus
             depth_for_score = depth_count + graph_depth_bonus
@@ -752,6 +1375,7 @@ def recompute_scores() -> None:
             relationship_components["graph_path_count_2hop"] = int(graph_metrics.get("path_count_2hop", 0))
             relationship_components["graph_entity_reach_2hop"] = int(graph_metrics.get("entity_reach_2hop", 0))
             relationship_components["graph_relation_count"] = int(graph_metrics.get("direct_relation_count", 0))
+            relationship_components["graph_latest_relation_at"] = graph_metrics.get("latest_relation_at")
             relationship_components["graph_path_samples"] = [
                 path.get("path_text")
                 for path in graph_paths[:3]
@@ -764,6 +1388,12 @@ def recompute_scores() -> None:
                 open_loops=open_loops,
                 trigger_score=trigger_for_score,
             )
+            open_case_penalty = min(
+                15.0,
+                open_case_counts.get("open_case_contacts", 0) * 1.5
+                + open_case_counts.get("open_case_opportunities", 0) * 2.5,
+            )
+            priority = max(0.0, round(priority - open_case_penalty, 2))
             priority_components["inactivity_days"] = inactivity_days
             priority_components["open_loop_count"] = open_loops
             priority_components["trigger_score"] = trigger_score
@@ -771,7 +1401,12 @@ def recompute_scores() -> None:
             priority_components["graph_recent_relation_count"] = int(graph_metrics.get("recent_relation_count", 0))
             priority_components["graph_uncertain_relation_count"] = int(graph_metrics.get("uncertain_relation_count", 0))
             priority_components["graph_opportunity_edge_count"] = int(graph_metrics.get("opportunity_edge_count", 0))
+            priority_components["graph_recent_opportunity_edge_count"] = int(graph_metrics.get("recent_opportunity_edge_count", 0))
+            priority_components["graph_stale_opportunity_edge_count"] = int(graph_metrics.get("stale_opportunity_edge_count", 0))
             priority_components["graph_priority_trigger_input"] = round(trigger_for_score, 3)
+            priority_components["open_case_penalty"] = round(open_case_penalty, 3)
+            priority_components["open_case_contacts"] = int(open_case_counts.get("open_case_contacts", 0))
+            priority_components["open_case_opportunities"] = int(open_case_counts.get("open_case_opportunities", 0))
             priority_components["last_interaction_id"] = last.interaction_id if last else None
             persist_score_snapshot(
                 contact_id=contact.contact_id,
@@ -784,11 +1419,20 @@ def recompute_scores() -> None:
                     "graph": {
                         "metrics": graph_metrics,
                         "paths": graph_paths[:4],
+                        "context_signals_v2": context_signals_v2[:8],
                     },
                 },
             )
     finally:
         db.close()
+
+
+def run_inference() -> dict[str, Any]:
+    settings = get_settings()
+    return run_inference_rules_v2(
+        min_confidence=settings.graph_v2_inference_min_confidence,
+        max_age_days=settings.graph_v2_inference_max_age_days,
+    )
 
 
 def cleanup_data() -> dict:

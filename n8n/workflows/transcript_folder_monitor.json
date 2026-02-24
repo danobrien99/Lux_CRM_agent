@@ -1,0 +1,167 @@
+{
+  "name": "transcript_folder_monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "schedule",
+      "name": "Hourly Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "file",
+        "operation": "search",
+        "queryString": "mimeType='text/plain' and trashed=false",
+        "returnAll": false,
+        "limit": 50
+      },
+      "id": "search_transcripts",
+      "name": "Search Transcript Files",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map((item, idx) => { const file = item.json ?? {}; return { json: { source_system: 'transcript', event_type: 'meeting_notes', external_id: String(file.id || `transcript-file-${Date.now()}-${idx}`), timestamp: file.modifiedTime || new Date().toISOString(), thread_id: file.id || null, direction: 'na', subject: file.name || 'Meeting Transcript File', participants: { from: [], to: [], cc: [] }, body_plain: String(file.description || file.name || ''), attachments: [{ id: file.id, name: file.name, webViewLink: file.webViewLink }] } }; });"
+      },
+      "id": "map_interaction",
+      "name": "Map Transcript Interaction",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://api:8000/v1/ingest/interaction_event",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Webhook-Secret",
+              "value": "9PZ5_Iw7ttWT6GJG0XIlG4platWDswpnROejWnfhGa7YwSXduGn7SBgwH2me3NlT"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json}}",
+        "options": {}
+      },
+      "id": "post_ingest",
+      "name": "POST Transcript Interaction",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1060,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.filter((item) => !item.json?.error);"
+      },
+      "id": "success_only",
+      "name": "Success Only",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.filter((item) => Boolean(item.json?.error)).map((item) => ({ json: { workflow: 'transcript_folder_monitor', failed_at: new Date().toISOString(), endpoint: 'http://api:8000/v1/ingest/interaction_event', error: item.json.error, response_payload: item.json } }));"
+      },
+      "id": "dead_letter_payload",
+      "name": "Dead Letter Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        380
+      ]
+    }
+  ],
+  "connections": {
+    "Hourly Trigger": {
+      "main": [
+        [
+          {
+            "node": "Search Transcript Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Transcript Files": {
+      "main": [
+        [
+          {
+            "node": "Map Transcript Interaction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Transcript Interaction": {
+      "main": [
+        [
+          {
+            "node": "POST Transcript Interaction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST Transcript Interaction": {
+      "main": [
+        [
+          {
+            "node": "Success Only",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Dead Letter Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -6,8 +6,16 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-SourceSystem = Literal["gmail", "calendar", "sheets", "news", "manual", "transcript"]
-InteractionEventType = Literal["email_received", "email_sent", "meeting_transcript", "news_item", "note"]
+SourceSystem = Literal["gmail", "calendar", "sheets", "news", "manual", "transcript", "slack"]
+InteractionEventType = Literal[
+    "email_received",
+    "email_sent",
+    "meeting_transcript",
+    "news_item",
+    "note",
+    "chat_message",
+    "meeting_notes",
+]
 Direction = Literal["in", "out", "na"]
 
 
@@ -33,6 +41,11 @@ class InteractionEventIn(BaseModel):
     participants: Participants
     body_plain: str
     attachments: list[dict[str, Any]] = Field(default_factory=list)
+    contact_id: str | None = None
+    primary_email: str | None = None
+    contact_display_name: str | None = None
+    contact_company: str | None = None
+    backfill_contact_mode: Literal["skip_previously_processed", "reprocess_all"] | None = None
 
 
 class NewsItemIn(BaseModel):
@@ -223,3 +236,77 @@ class BackfillContactStatusResponse(BaseModel):
     processed_contact_count: int
     processed_contact_ids: list[str] = Field(default_factory=list)
     processed_primary_emails: list[str] = Field(default_factory=list)
+
+
+EntityStatus = Literal["canonical", "provisional", "rejected"]
+
+
+class CasePromotionRequest(BaseModel):
+    promotion_reason: str = Field(default="manual_promotion")
+    gate_results: dict[str, Any] = Field(default_factory=dict)
+
+
+class CaseContactItem(BaseModel):
+    case_id: str
+    email: str
+    display_name: str | None = None
+    status: str
+    entity_status: EntityStatus
+    interaction_id: str | None = None
+    provisional_contact_id: str | None = None
+    promotion_reason: str | None = None
+    gate_results: dict[str, Any] = Field(default_factory=dict)
+    evidence_count: int = 0
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class CaseOpportunityItem(BaseModel):
+    case_id: str
+    title: str
+    company_name: str | None = None
+    thread_id: str | None = None
+    status: str
+    entity_status: EntityStatus
+    interaction_id: str | None = None
+    promotion_reason: str | None = None
+    gate_results: dict[str, Any] = Field(default_factory=dict)
+    motivators: list[str] = Field(default_factory=list)
+    contact_ids: list[str] = Field(default_factory=list)
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class CaseContactsListResponse(BaseModel):
+    items: list[CaseContactItem] = Field(default_factory=list)
+
+
+class CaseOpportunitiesListResponse(BaseModel):
+    items: list[CaseOpportunityItem] = Field(default_factory=list)
+
+
+class CasePromotionResponse(BaseModel):
+    case_id: str
+    status: str
+    entity_status: EntityStatus
+    promoted_id: str | None = None
+
+
+class BackfillRunReportIn(BaseModel):
+    workflow: str
+    run_id: str
+    status: Literal["success", "warning", "error"] = "success"
+    mode: str | None = None
+    total_items: int = 0
+    success_items: int = 0
+    dead_letter_items: int = 0
+    dead_letter_ratio: float = 0.0
+    generated_at: datetime
+    error_samples: list[dict[str, Any]] = Field(default_factory=list)
+    notes: str | None = None
+
+
+class BackfillRunReportResponse(BaseModel):
+    raw_event_id: str
+    created: bool
+    status: str

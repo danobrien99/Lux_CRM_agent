@@ -1,0 +1,158 @@
+@prefix sh:   <http://www.w3.org/ns/shacl#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix hs:   <https://luxcrm.ai/ontologies/hubspot-crm#> .
+
+#################################################################
+# Conventions
+# - targetClass aligns to hs: classes from your TTL.
+# - paths align to hs: object/datatype properties from your TTL.
+# - Severity: Violation = hard gate, Warning = soft gate.
+#################################################################
+
+#################################################################
+# HARD GATES
+#################################################################
+
+# Deal must have exactly one Company
+hs:DealShape a sh:NodeShape ;
+  sh:targetClass hs:Deal ;
+  sh:property [
+    sh:path hs:dealForCompany ;
+    sh:class hs:Company ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:severity sh:Violation ;
+    sh:message "Deal must be linked to exactly one Company via hs:dealForCompany." ;
+  ] .
+
+# Deal should involve at least one Contact (hard gate if your workflow requires it)
+hs:DealInvolvesContactShape a sh:NodeShape ;
+  sh:targetClass hs:Deal ;
+  sh:property [
+    sh:path hs:involvesContact ;
+    sh:class hs:Contact ;
+    sh:minCount 1 ;
+    sh:severity sh:Violation ;
+    sh:message "Deal must involve at least one Contact via hs:involvesContact." ;
+  ] .
+
+# Engagement must have occurredAt (exactly one) and at least one participant
+hs:EngagementShape a sh:NodeShape ;
+  sh:targetClass hs:Engagement ;
+  sh:property [
+    sh:path hs:occurredAt ;
+    sh:datatype xsd:dateTime ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:severity sh:Violation ;
+    sh:message "Engagement must have exactly one occurredAt (xsd:dateTime)." ;
+  ] ;
+  sh:property [
+    sh:path hs:engagedWith ;
+    sh:class hs:Person ;
+    sh:minCount 1 ;
+    sh:severity sh:Violation ;
+    sh:message "Engagement must have at least one hs:engagedWith participant (Person)." ;
+  ] .
+
+# Contact must have externalId (system-of-record ID)
+hs:ContactExternalIdShape a sh:NodeShape ;
+  sh:targetClass hs:Contact ;
+  sh:property [
+    sh:path hs:externalId ;
+    sh:datatype xsd:string ;
+    sh:minCount 1 ;
+    sh:severity sh:Violation ;
+    sh:message "Contact must have hs:externalId (HubSpot object id / SF Id / your canonical id)." ;
+  ] .
+
+# Company must have externalId (recommended as hard gate if you sync companies)
+hs:CompanyExternalIdShape a sh:NodeShape ;
+  sh:targetClass hs:Company ;
+  sh:property [
+    sh:path hs:externalId ;
+    sh:datatype xsd:string ;
+    sh:minCount 1 ;
+    sh:severity sh:Violation ;
+    sh:message "Company must have hs:externalId." ;
+  ] .
+
+# worksAt must point to a Company (if present)
+hs:WorksAtRangeShape a sh:NodeShape ;
+  sh:targetClass hs:Person ;
+  sh:property [
+    sh:path hs:worksAt ;
+    sh:class hs:Company ;
+    sh:severity sh:Violation ;
+    sh:message "If hs:worksAt exists, it must reference a Company node." ;
+  ] .
+
+#################################################################
+# SOFT GATES (WARNINGS)
+#################################################################
+
+# Person with multiple worksAt edges is suspicious unless you model temporality explicitly
+hs:MultiEmploymentWarningShape a sh:NodeShape ;
+  sh:targetClass hs:Person ;
+  sh:property [
+    sh:path hs:worksAt ;
+    sh:maxCount 1 ;
+    sh:severity sh:Warning ;
+    sh:message "Person has multiple hs:worksAt relationships. If valid, model temporality (validFrom/validTo) or store as assertions only." ;
+  ] .
+
+# Engagement should ideally link to a Company OR a Deal (warn if neither)
+hs:EngagementHasContextWarningShape a sh:NodeShape ;
+  sh:targetClass hs:Engagement ;
+  sh:or (
+    [ sh:property [ sh:path hs:engagedCompany ; sh:minCount 1 ] ]
+    [ sh:property [ sh:path hs:engagedDeal    ; sh:minCount 1 ] ]
+  ) ;
+  sh:severity sh:Warning ;
+  sh:message "Engagement has no engagedCompany and no engagedDeal. Agent context assembly will be weaker." .
+
+# Assertion must have subject/predicate/object/sourceArtifact/extractionEvent (hard gate if you rely on assertions)
+hs:AssertionShape a sh:NodeShape ;
+  sh:targetClass hs:Assertion ;
+  sh:property [
+    sh:path hs:assertionSubject ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+    sh:severity sh:Violation ;
+    sh:message "Assertion must have exactly one assertionSubject." ;
+  ] ;
+  sh:property [
+    sh:path hs:assertionPredicate ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+    sh:severity sh:Violation ;
+    sh:message "Assertion must have exactly one assertionPredicate." ;
+  ] ;
+  sh:property [
+    sh:path hs:assertionObject ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+    sh:severity sh:Violation ;
+    sh:message "Assertion must have exactly one assertionObject." ;
+  ] ;
+  sh:property [
+    sh:path hs:sourceArtifact ;
+    sh:minCount 1 ;
+    sh:severity sh:Violation ;
+    sh:message "Assertion must link to at least one sourceArtifact." ;
+  ] ;
+  sh:property [
+    sh:path hs:extractionEvent ;
+    sh:minCount 1 ;
+    sh:severity sh:Warning ;
+    sh:message "Assertion should link to an extractionEvent (warning if missing)." ;
+  ] ;
+  sh:property [
+    sh:path hs:confidenceValue ;
+    sh:datatype xsd:decimal ;
+    sh:severity sh:Warning ;
+    sh:message "Assertion should include confidenceValue (0..1) for gating." ;
+  ] ;
+  sh:property [
+    sh:path hs:assertedAt ;
+    sh:datatype xsd:dateTime ;
+    sh:severity sh:Warning ;
+    sh:message "Assertion should include assertedAt for recency gating." ;
+  ] .

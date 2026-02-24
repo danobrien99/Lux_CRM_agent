@@ -1,0 +1,26 @@
+{
+  "source_system": "gmail",
+  "event_type": "email_sent",
+  "external_id": "{{OPP_FOLLOWUP_EVENT_ID}}",
+  "timestamp": "{{TIMESTAMP_3}}",
+  "thread_id": "{{THREAD_OPP}}",
+  "direction": "out",
+  "subject": "Re: Acme Example pilot scope and timeline",
+  "participants": {
+    "from": [
+      {
+        "email": "{{OWNER_EMAIL}}",
+        "name": "Owner {{RUN_ID}}"
+      }
+    ],
+    "to": [
+      {
+        "email": "{{EXISTING_EMAIL}}",
+        "name": "Existing Buyer {{RUN_ID}}"
+      }
+    ],
+    "cc": []
+  },
+  "body_plain": "Following up on the Acme Example pilot. Sharing two meeting options to finalize owner/date for the next milestone and keep the process moving.",
+  "attachments": []
+}

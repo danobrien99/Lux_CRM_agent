@@ -4,6 +4,7 @@ import logging
 
 from redis import Redis
 from rq import Queue
+from rq import Retry
 
 from app.core.config import get_settings
 
@@ -27,7 +28,18 @@ def enqueue_job(job_name: str, *args, **kwargs) -> str:
 
     try:
         queue = _get_queue()
-        job = queue.enqueue(f"app.workers.jobs.{job_name}", *args, **kwargs)
+        retry = None
+        if settings.queue_retry_max > 0:
+            retry = Retry(
+                max=settings.queue_retry_max,
+                interval=settings.queue_retry_interval_seconds,
+            )
+        job = queue.enqueue(
+            f"app.workers.jobs.{job_name}",
+            *args,
+            retry=retry,
+            **kwargs,
+        )
         logger.info("enqueued_job", extra={"job_name": job_name, "job_id": job.id})
         return job.id
     except Exception:  # pragma: no cover - network failure fallback

@@ -7,8 +7,10 @@ EVENT_TYPE_TO_INTERACTION_TYPE = {
     "email_received": "email",
     "email_sent": "email",
     "meeting_transcript": "meeting",
+    "meeting_notes": "meeting",
     "news_item": "news",
     "note": "note",
+    "chat_message": "chat",
 }
 
 

@@ -10,10 +10,15 @@ Central catalog for prompts used by extraction, memory, scoring, and drafting.
   - `writing_style_warm_professional.md`
   - `writing_style_friendly_personal.md`
   - fallback: generic relationship-style guidance if a specific file is unavailable
+- Additional behavior: enforces temporal grounding (prefer recent evidence), next-action alignment when available, and no unsupported factual claims.
 
 ## `draft_email_user`
 - Where used: `app/services/drafting/composer.py::_compose_openai_draft`
-- How used: User prompt that passes structured draft context as JSON.
+- How used: User prompt that passes structured draft context as JSON, including:
+  - active opportunity thread details
+  - proposed next action and rationale
+  - motivator signals and assertion evidence traces
+  - ranked graph paths and temporally re-ranked email evidence snippets
 
 ## `warmth_depth_system`
 - Where used: `app/services/scoring/content_signals.py::_score_with_openai`

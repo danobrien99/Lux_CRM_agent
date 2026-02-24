@@ -18,13 +18,17 @@ _PROMPTS: dict[str, PromptDefinition] = {
         description=(
             "System instructions for outbound email draft generation. "
             "Defines safety constraints and injects combined writing-style guidance "
-            "(user baseline + relationship-context style)."
+            "(user baseline + relationship-context style), with temporal grounding and "
+            "next-action focus from hybrid graph+vector retrieval evidence."
         ),
         used_by="app/services/drafting/composer.py::_compose_openai_draft",
         template=(
             "You are an executive communication assistant. Write a concise outbound email draft "
             "that sounds natural, follows the requested tone, and does not invent facts. "
-            "Return plain text only.\n\n"
+            "Return plain text only.\n"
+            "Prioritize temporal relevance: favor the freshest evidence and avoid stale details unless marked as context.\n"
+            "If proposed_next_action is present, align the draft around that action.\n"
+            "Ground specific details in the provided retrieval evidence; if uncertain, stay generic.\n\n"
             "Apply the writing-style instructions below. "
             "The user baseline style always applies; relationship-context style adjusts tone based on relationship maturity.\n"
             "{writing_style_instructions}"
@@ -34,12 +38,15 @@ _PROMPTS: dict[str, PromptDefinition] = {
         key="draft_email_user",
         description=(
             "User prompt carrying structured context for a single outbound message. "
-            "The model should produce one complete email draft with greeting and sign-off."
+            "The model should produce one complete email draft with greeting and sign-off, "
+            "using active opportunity-thread and next-action guidance."
         ),
         used_by="app/services/drafting/composer.py::_compose_openai_draft",
         template=(
             "Generate a single email draft using this JSON context. "
-            "Include greeting and sign-off with [Your Name].\n\n"
+            "Include greeting and sign-off with [Your Name].\n"
+            "Use recent_interactions, opportunity_thread, graph_paths, motivator_signals, assertion_evidence_trace, and email_context_snippets as primary grounding.\n"
+            "If older information appears, treat it as background and keep focus on current priorities.\n\n"
             "{context_json}"
         ),
     ),

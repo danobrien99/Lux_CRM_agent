@@ -23,6 +23,10 @@ def upsert_raw_event(
         )
     )
     if existing:
+        existing.event_type = event_type
+        existing.payload_json = payload_json
+        db.commit()
+        db.refresh(existing)
         return existing, False
 
     event = RawEvent(

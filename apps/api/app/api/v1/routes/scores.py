@@ -560,6 +560,7 @@ def _build_interaction_summary(
         max_hops=2,
         limit=4,
         include_uncertain=False,
+        lookback_days=365,
     )
     graph_metrics = get_contact_graph_metrics(contact_id)
     graph_topic_hints: list[str] = []

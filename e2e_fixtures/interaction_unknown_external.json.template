@@ -1,0 +1,26 @@
+{
+  "source_system": "gmail",
+  "event_type": "email_received",
+  "external_id": "{{UNKNOWN_EXTERNAL_EVENT_ID}}",
+  "timestamp": "{{TIMESTAMP_1}}",
+  "thread_id": "{{THREAD_UNKNOWN}}",
+  "direction": "in",
+  "subject": "Intro: pilot interest at Acme Example",
+  "participants": {
+    "from": [
+      {
+        "email": "{{UNKNOWN_EMAIL}}",
+        "name": "Unknown Prospect {{RUN_ID}}"
+      }
+    ],
+    "to": [
+      {
+        "email": "{{OWNER_EMAIL}}",
+        "name": "Owner {{RUN_ID}}"
+      }
+    ],
+    "cc": []
+  },
+  "body_plain": "Hi team, I am exploring a pilot for Acme Example. I prefer short weekly updates and quick decision cycles. Let's schedule next week to align on owner and timeline.",
+  "attachments": []
+}

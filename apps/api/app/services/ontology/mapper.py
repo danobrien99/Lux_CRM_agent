@@ -3,14 +3,50 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from app.core.config import get_settings
+from app.services.ontology.runtime_contract import (
+    load_runtime_ontology_contract,
+    predicate_token_to_ontology_property,
+)
 
 logger = logging.getLogger(__name__)
+
+_LOW_SIGNAL_TOPIC_TERMS = {
+    "a",
+    "an",
+    "and",
+    "along",
+    "also",
+    "away",
+    "address",
+    "body",
+    "cc",
+    "chance",
+    "check",
+    "communication",
+    "connection",
+    "find",
+    "for",
+    "from",
+    "great",
+    "greetings",
+    "hello",
+    "hi",
+    "re",
+    "fwd",
+    "fw",
+    "subject",
+    "thanks",
+    "thank",
+    "the",
+    "to",
+}
 
 _DEFAULT_ONTOLOGY: dict[str, Any] = {
     "version": "1.0",
@@ -140,6 +176,41 @@ def _as_float(value: object, default: float) -> float:
         return default
 
 
+def _looks_low_signal_topic_label(label: str) -> bool:
+    text = _normalize_text(label)
+    if not text:
+        return True
+
+    lowered = text.lower()
+    if lowered in _LOW_SIGNAL_TOPIC_TERMS:
+        return True
+    if lowered.startswith("user ") or lowered.startswith("user's "):
+        return True
+
+    if "@" in text:
+        return True
+
+    tokens = [tok for tok in re.split(r"[^A-Za-z0-9&+-]+", text) if tok]
+    if not tokens:
+        return True
+
+    if len(tokens) == 1:
+        token = tokens[0]
+        token_lower = token.lower()
+        if token_lower in _LOW_SIGNAL_TOPIC_TERMS:
+            return True
+        if len(token_lower) <= 2:
+            return True
+        # Heuristic fallback tends to emit lower-case body words; keep acronyms/proper nouns.
+        if token.islower() and token_lower.isalpha():
+            return True
+
+    if all(tok.lower() in _LOW_SIGNAL_TOPIC_TERMS for tok in tokens):
+        return True
+
+    return False
+
+
 def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(base)
     for key, value in override.items():
@@ -254,6 +325,14 @@ def _is_high_value(claim_type: str, predicate: str) -> bool:
     return bool(claim_config.get("high_value", False))
 
 
+def _ontology_predicate_metadata(predicate: str | None) -> tuple[str | None, bool]:
+    ont_predicate = predicate_token_to_ontology_property(predicate)
+    if not ont_predicate:
+        return None, False
+    contract = load_runtime_ontology_contract()
+    return ont_predicate, bool(contract.has_property(ont_predicate))
+
+
 def map_relation_to_claim(
     relation: dict[str, Any],
     *,
@@ -277,6 +356,7 @@ def map_relation_to_claim(
     claim_config = _claim_type_config(claim_type)
     if not predicate:
         predicate = _normalize_token(claim_config.get("default_predicate")) or "related_to"
+    ontology_predicate, ontology_supported = _ontology_predicate_metadata(predicate)
 
     value_json: dict[str, Any] = {
         "subject": subject,
@@ -317,6 +397,9 @@ def map_relation_to_claim(
         "valid_to": None,
         "confidence": confidence,
         "source_system": source_system,
+        "ontology_predicate": ontology_predicate,
+        "ontology_supported": ontology_supported,
+        "promotion_scope": "crm_case_evidence" if ontology_supported else "case_evidence_only",
     }
 
 
@@ -326,11 +409,14 @@ def map_topic_to_claim(topic: dict[str, Any], *, source_system: str = "cognee") 
     label = _normalize_text(topic.get("label") or topic.get("topic"))
     if not label:
         return None
+    if _looks_low_signal_topic_label(label):
+        return None
 
     claim_type = "topic"
     claim_config = _claim_type_config(claim_type)
     predicate = _normalize_token(claim_config.get("default_predicate")) or "discussed_topic"
     confidence = _as_float(topic.get("confidence"), 0.5)
+    ontology_predicate, ontology_supported = _ontology_predicate_metadata(predicate)
     return {
         "claim_id": str(uuid4()),
         "claim_type": claim_type,
@@ -346,6 +432,9 @@ def map_topic_to_claim(topic: dict[str, Any], *, source_system: str = "cognee") 
         "valid_to": None,
         "confidence": confidence,
         "source_system": source_system,
+        "ontology_predicate": ontology_predicate,
+        "ontology_supported": ontology_supported,
+        "promotion_scope": "crm_case_evidence" if ontology_supported else "case_evidence_only",
     }
 
 
@@ -374,6 +463,8 @@ def relation_payload_from_claim(claim: dict[str, Any]) -> dict[str, Any] | None:
     if not object_name:
         return None
     if object_name.lower() == subject.lower():
+        return None
+    if "ontology_supported" in claim and not bool(claim.get("ontology_supported")):
         return None
 
     subject_kind = _normalize_text(value_json.get("subject_type")) or _normalize_text(claim_config.get("subject_kind"))

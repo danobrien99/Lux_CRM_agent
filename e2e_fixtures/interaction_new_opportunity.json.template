@@ -1,0 +1,26 @@
+{
+  "source_system": "gmail",
+  "event_type": "email_received",
+  "external_id": "{{OPP_EVENT_ID}}",
+  "timestamp": "{{TIMESTAMP_2}}",
+  "thread_id": "{{THREAD_OPP}}",
+  "direction": "in",
+  "subject": "Acme Example pilot scope and next steps",
+  "participants": {
+    "from": [
+      {
+        "email": "{{EXISTING_EMAIL}}",
+        "name": "Existing Buyer {{RUN_ID}}"
+      }
+    ],
+    "to": [
+      {
+        "email": "{{OWNER_EMAIL}}",
+        "name": "Owner {{RUN_ID}}"
+      }
+    ],
+    "cc": []
+  },
+  "body_plain": "At Acme Example, we need a Q2 pilot rollout. We are committed to selecting a vendor this month. We prefer a lightweight onboarding path and a clear milestone owner/date.",
+  "attachments": []
+}

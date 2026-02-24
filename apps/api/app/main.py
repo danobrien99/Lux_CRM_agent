@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from app.api.v1.routes import admin, contacts, drafts, health, ingest, news, resolution, scores
+from app.api.v1.routes import admin, cases, contacts, drafts, health, ingest, news, resolution, scores
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.pg.base import Base
@@ -46,3 +46,4 @@ app.include_router(news.router, prefix=settings.api_prefix)
 app.include_router(drafts.router, prefix=settings.api_prefix)
 app.include_router(resolution.router, prefix=settings.api_prefix)
 app.include_router(admin.router, prefix=settings.api_prefix)
+app.include_router(cases.router, prefix=settings.api_prefix)

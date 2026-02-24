@@ -11,7 +11,10 @@
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [220, 300]
+      "position": [
+        220,
+        300
+      ]
     },
     {
       "parameters": {
@@ -21,7 +24,10 @@
       "name": "Map News Item",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [500, 300]
+      "position": [
+        500,
+        300
+      ]
     },
     {
       "parameters": {
@@ -32,7 +38,7 @@
           "parameters": [
             {
               "name": "X-Webhook-Secret",
-              "value": "={{$env.N8N_WEBHOOK_SECRET}}"
+              "value": "9PZ5_Iw7ttWT6GJG0XIlG4platWDswpnROejWnfhGa7YwSXduGn7SBgwH2me3NlT"
             }
           ]
         },
@@ -45,7 +51,10 @@
       "name": "POST News Item",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [780, 300],
+      "position": [
+        780,
+        300
+      ],
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 5000,
@@ -59,7 +68,10 @@
       "name": "Success Only",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1060, 220]
+      "position": [
+        1060,
+        220
+      ]
     },
     {
       "parameters": {
@@ -69,7 +81,10 @@
       "name": "Dead Letter Payload",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1060, 380]
+      "position": [
+        1060,
+        380
+      ]
     }
   ],
   "connections": {

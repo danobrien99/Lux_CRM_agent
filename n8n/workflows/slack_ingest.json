@@ -1,0 +1,133 @@
+{
+  "name": "slack_ingest",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "slack-ingest",
+        "responseMode": "onReceived"
+      },
+      "id": "webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const toParticipant = (value) => { if (!value) return []; if (typeof value === 'string') return [{ email: value.toLowerCase() }]; if (value.email) return [{ email: String(value.email).toLowerCase(), ...(value.name ? { name: String(value.name) } : {}) }]; return []; }; return items.map((item, idx) => { const payload = item.json ?? {}; const from = toParticipant(payload.from || payload.user || payload.author); const to = Array.isArray(payload.to) ? payload.to : []; const normalizedTo = to.map((entry) => ({ email: String(entry.email || entry).toLowerCase(), ...(entry.name ? { name: String(entry.name) } : {}) })).filter((entry) => entry.email.includes('@')); return { json: { source_system: 'slack', event_type: 'chat_message', external_id: String(payload.external_id || payload.ts || `slack-${Date.now()}-${idx}`), timestamp: payload.timestamp || new Date().toISOString(), thread_id: payload.thread_id || payload.thread_ts || null, direction: payload.direction || 'in', subject: payload.subject || payload.channel || 'Slack Message', participants: { from, to: normalizedTo, cc: [] }, body_plain: String(payload.body_plain || payload.text || ''), attachments: Array.isArray(payload.attachments) ? payload.attachments : [] } }; });"
+      },
+      "id": "map",
+      "name": "Map Slack Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://api:8000/v1/ingest/interaction_event",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Webhook-Secret",
+              "value": "9PZ5_Iw7ttWT6GJG0XIlG4platWDswpnROejWnfhGa7YwSXduGn7SBgwH2me3NlT"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json}}",
+        "options": {}
+      },
+      "id": "post",
+      "name": "POST Slack Interaction",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        780,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.filter((item) => !item.json?.error);"
+      },
+      "id": "success_only",
+      "name": "Success Only",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.filter((item) => Boolean(item.json?.error)).map((item) => ({ json: { workflow: 'slack_ingest', failed_at: new Date().toISOString(), endpoint: 'http://api:8000/v1/ingest/interaction_event', error: item.json.error, response_payload: item.json } }));"
+      },
+      "id": "dead_letter_payload",
+      "name": "Dead Letter Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        380
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Map Slack Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Slack Message": {
+      "main": [
+        [
+          {
+            "node": "POST Slack Interaction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST Slack Interaction": {
+      "main": [
+        [
+          {
+            "node": "Success Only",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Dead Letter Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

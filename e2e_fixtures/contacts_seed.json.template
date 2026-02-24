@@ -1,0 +1,25 @@
+{
+  "mode": "push",
+  "rows": [
+    {
+      "contact_id": "{{OWNER_CONTACT_ID}}",
+      "primary_email": "{{OWNER_EMAIL}}",
+      "display_name": "Owner {{RUN_ID}}",
+      "first_name": "Owner",
+      "last_name": "{{RUN_ID}}",
+      "company": "Lux CRM",
+      "owner_user_id": "owner-user",
+      "use_sensitive_in_drafts": false
+    },
+    {
+      "contact_id": "{{EXISTING_CONTACT_ID}}",
+      "primary_email": "{{EXISTING_EMAIL}}",
+      "display_name": "Existing Buyer {{RUN_ID}}",
+      "first_name": "Existing",
+      "last_name": "Buyer",
+      "company": "Acme Example",
+      "owner_user_id": "owner-user",
+      "use_sensitive_in_drafts": false
+    }
+  ]
+}

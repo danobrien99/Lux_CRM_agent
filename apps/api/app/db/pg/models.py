@@ -37,6 +37,7 @@ class Interaction(Base):
     participants_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     contact_ids_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="new")
+    processing_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Chunk(Base):
@@ -63,7 +64,7 @@ class Draft(Base):
     __tablename__ = "drafts"
 
     draft_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    contact_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    contact_id: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     prompt_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     draft_text: Mapped[str] = mapped_column(Text, nullable=False)
@@ -76,7 +77,7 @@ class ResolutionTask(Base):
     __tablename__ = "resolution_tasks"
 
     task_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    contact_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    contact_id: Mapped[str] = mapped_column(String(128), nullable=False)
     task_type: Mapped[str] = mapped_column(String(64), nullable=False)
     proposed_claim_id: Mapped[str] = mapped_column(String(64), nullable=False)
     current_claim_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -88,7 +89,7 @@ class ResolutionTask(Base):
 class ContactCache(Base):
     __tablename__ = "contact_cache"
 
-    contact_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    contact_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     primary_email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

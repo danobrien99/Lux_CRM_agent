@@ -11,6 +11,12 @@ from sqlalchemy.orm import Session
 from app.db.neo4j.driver import neo4j_session
 from app.db.pg.models import ContactCache, Interaction
 from app.services.embeddings.embedder import embed_texts
+from app.services.ontology.runtime_contract import ontology_term_to_neo4j_identifier
+
+
+_CONTACT_LABEL = ontology_term_to_neo4j_identifier("hs:Contact") or "`Contact`"
+_ASSERTION_LABEL = ontology_term_to_neo4j_identifier("hs:Assertion") or "`Assertion`"
+_ASSERTION_OBJECT_REL = ontology_term_to_neo4j_identifier("hs:assertionObject") or "`assertionObject`"
 
 
 _STOPWORDS = {
@@ -78,12 +84,14 @@ def _graph_candidates(keywords: list[str], limit: int) -> dict[str, dict[str, An
 
         if keywords:
             records = session.run(
-                """
+                f"""
                 UNWIND $keywords AS kw
-                MATCH (c:Contact)-[:HAS_CLAIM]->(cl:Claim)
+                MATCH (c:{_CONTACT_LABEL})
+                MATCH (cl:{_ASSERTION_LABEL})-[:{_ASSERTION_OBJECT_REL}]->(c)
                 WHERE toLower(coalesce(cl.claim_type, "")) CONTAINS kw
                    OR toLower(toString(coalesce(cl.value_json, ""))) CONTAINS kw
-                RETURN c.contact_id AS contact_id,
+                   OR toLower(coalesce(cl.object_name, "")) CONTAINS kw
+                RETURN c.external_id AS contact_id,
                        c.display_name AS display_name,
                        collect(DISTINCT kw) AS matched_keywords,
                        count(cl) AS graph_hits
@@ -94,10 +102,10 @@ def _graph_candidates(keywords: list[str], limit: int) -> dict[str, dict[str, An
             ).data()
         else:
             records = session.run(
-                """
-                MATCH (c:Contact)
-                OPTIONAL MATCH (c)-[:HAS_CLAIM]->(cl:Claim)
-                RETURN c.contact_id AS contact_id,
+                f"""
+                MATCH (c:{_CONTACT_LABEL})
+                OPTIONAL MATCH (cl:{_ASSERTION_LABEL})-[:{_ASSERTION_OBJECT_REL}]->(c)
+                RETURN c.external_id AS contact_id,
                        c.display_name AS display_name,
                        [] AS matched_keywords,
                        count(cl) AS graph_hits
@@ -155,8 +163,9 @@ def _claim_snippets(contact_id: str) -> list[str]:
         if session is None:
             return []
         rows = session.run(
-            """
-            MATCH (c:Contact {contact_id: $contact_id})-[:HAS_CLAIM]->(cl:Claim)
+            f"""
+            MATCH (c:{_CONTACT_LABEL} {{external_id: $contact_id}})
+            MATCH (cl:{_ASSERTION_LABEL})-[:{_ASSERTION_OBJECT_REL}]->(c)
             RETURN coalesce(cl.claim_type, "unknown") AS claim_type,
                    toString(coalesce(cl.value_json, "")) AS value_json,
                    coalesce(cl.status, "proposed") AS status,

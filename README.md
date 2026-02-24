@@ -8,7 +8,7 @@ CRM relationship intelligence augmentation platform.
 - Neo4j schema bootstrapping script and graph query helpers
 - RQ worker job skeletons for ingestion, scoring, and cleanup
 - Local-first Cognee and Mem0 adapter hooks for open-source codebase integration
-- n8n workflow JSON templates for Gmail, transcripts, contacts sync, news, score recompute, and cleanup
+- n8n workflow JSON templates for Gmail, Slack, transcripts, transcript-folder monitoring, contacts sync, news, score recompute, inference recompute, and cleanup
 - Next.js MVP UI pages for priority list, contact detail, news matching, drafts, and resolution queue
 
 ## Repository layout

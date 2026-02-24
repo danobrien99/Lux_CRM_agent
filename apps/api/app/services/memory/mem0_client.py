@@ -138,6 +138,10 @@ def propose_memory_ops(bundle: dict) -> list[dict]:
     settings = get_settings()
     backend = settings.mem0_backend.lower().strip()
 
+    if backend in {"disabled", "disable", "none", "off"}:
+        logger.info("mem0_backend_disabled")
+        return []
+
     if backend == "local":
         result = _propose_via_local_module(bundle)
         if result is not None:
