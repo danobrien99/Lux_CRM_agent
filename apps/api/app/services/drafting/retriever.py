@@ -16,7 +16,9 @@ from app.db.neo4j.queries import (
     get_contact_context_signals_v2,
     get_contact_graph_metrics,
     get_contact_graph_paths,
+    get_latest_next_step_suggestions_v2,
     get_latest_score_snapshots,
+    list_open_opportunities_v2,
 )
 from app.db.pg.models import Chunk, ContactCache, Interaction
 from app.services.embeddings.vector_store import search_chunks
@@ -241,6 +243,7 @@ def _rank_graph_paths(graph_paths: list[dict], objective_terms: set[str]) -> lis
         avg_confidence = float(path.get("avg_confidence", 0.0) or 0.0)
         opportunity_hits = int(path.get("opportunity_hits") or 0)
         uncertain_hops = int(path.get("uncertain_hops") or 0)
+        noise_penalty = float(path.get("noise_penalty", 0.0) or 0.0)
 
         recency_days_raw = path.get("recency_days")
         recency_days = int(recency_days_raw) if isinstance(recency_days_raw, int) else 120
@@ -256,6 +259,7 @@ def _rank_graph_paths(graph_paths: list[dict], objective_terms: set[str]) -> lis
             + semantic_score * 0.20
             + opportunity_score * 0.15
             - uncertainty_penalty
+            - min(0.25, noise_penalty)
         )
 
         entry = dict(path)
@@ -265,6 +269,7 @@ def _rank_graph_paths(graph_paths: list[dict], objective_terms: set[str]) -> lis
         entry["semantic_score"] = round(semantic_score, 6)
         entry["recency_score"] = round(recency_score, 6)
         entry["opportunity_score"] = round(opportunity_score, 6)
+        entry["noise_penalty"] = round(noise_penalty, 4)
         ranked.append(entry)
 
     ranked.sort(
@@ -281,6 +286,8 @@ def _rank_graph_paths(graph_paths: list[dict], objective_terms: set[str]) -> lis
 def _extract_graph_focus_terms(graph_paths: list[dict], *, max_terms: int = 10) -> list[str]:
     counter: Counter[str] = Counter()
     for path in graph_paths[:6]:
+        if float(path.get("noise_penalty", 0.0) or 0.0) >= 0.2 and int(path.get("opportunity_hits") or 0) <= 0:
+            continue
         text = str(path.get("path_text") or "")
         boost = 1 + int(path.get("opportunity_hits") or 0)
         for token in _tokenize(text, max_tokens=28):
@@ -293,6 +300,35 @@ def _extract_graph_focus_terms(graph_paths: list[dict], *, max_terms: int = 10) 
                 counter[token] += 1
 
     return [token for token, _count in counter.most_common(max_terms)]
+
+
+def _topic_terms_from_context_signals(signals: list[dict[str, Any]], *, max_terms: int = 4) -> list[str]:
+    seen: set[str] = set()
+    terms: list[str] = []
+    for signal in signals:
+        if not isinstance(signal, dict):
+            continue
+        if str(signal.get("claim_type") or "").lower() != "topic":
+            continue
+        status = str(signal.get("status") or "proposed").lower()
+        confidence = float(signal.get("confidence") or 0.0)
+        if status not in {"accepted", "verified"}:
+            continue
+        if confidence < 0.55:
+            continue
+        candidate = _clean_phrase(signal.get("object_name"), max_chars=80)
+        if not candidate:
+            continue
+        for token in _tokenize(candidate, max_tokens=6):
+            if len(token) < 4 or token in _STOPWORDS:
+                continue
+            if token in seen:
+                continue
+            seen.add(token)
+            terms.append(token)
+            if len(terms) >= max_terms:
+                return terms
+    return terms
 
 
 def _build_thread_candidates(
@@ -651,6 +687,7 @@ def build_retrieval_bundle(
     objective: str | None,
     allow_sensitive: bool,
     *,
+    opportunity_id: str | None = None,
     allow_uncertain_context: bool = False,
     allow_proposed_changes_in_external_text: bool = False,
 ) -> dict:
@@ -668,7 +705,35 @@ def build_retrieval_bundle(
     snippet_map = _interaction_snippet_map(db, interaction_ids, max_chars=380)
     interaction_meta_by_id = _interaction_meta(contact_interactions, snippet_map)
 
+    opportunity_context: dict[str, Any] | None = None
+    if isinstance(opportunity_id, str) and opportunity_id.strip():
+        try:
+            for row in list_open_opportunities_v2(limit=300):
+                if str(row.get("opportunity_id") or "") != opportunity_id:
+                    continue
+                opportunity_context = {
+                    "opportunity_id": str(row.get("opportunity_id") or ""),
+                    "title": str(row.get("title") or "") or None,
+                    "company_name": str(row.get("company_name") or "") or None,
+                    "thread_id": str(row.get("thread_id") or "") or None,
+                    "last_engagement_at": row.get("last_engagement_at"),
+                    "updated_at": row.get("updated_at"),
+                }
+                break
+        except Exception:
+            opportunity_context = None
+
     query = objective or (contact.display_name if contact else "follow up")
+    if opportunity_context:
+        title = str(opportunity_context.get("title") or "").strip()
+        company = str(opportunity_context.get("company_name") or "").strip()
+        if not objective:
+            if title and company:
+                query = f"Advance {title} with {company} and confirm next step"
+            elif title:
+                query = f"Advance {title} and confirm next step"
+        else:
+            query = " ".join(part for part in [query, title, company] if part).strip()
     objective_terms = set(_tokenize(query, max_tokens=24))
 
     raw_graph_paths = get_contact_graph_paths(
@@ -684,14 +749,29 @@ def build_retrieval_bundle(
     graph_focus_terms = _extract_graph_focus_terms(graph_paths)
 
     thread_candidates = _build_thread_candidates(contact_interactions, interaction_meta_by_id, graph_paths, now)
-    active_thread = thread_candidates[0] if thread_candidates else None
+    forced_thread_id = str(opportunity_context.get("thread_id") or "") if isinstance(opportunity_context, dict) else ""
+    active_thread = None
+    if forced_thread_id:
+        for candidate in thread_candidates:
+            if str(candidate.get("thread_id") or "") == forced_thread_id:
+                active_thread = candidate
+                break
+    if active_thread is None:
+        active_thread = thread_candidates[0] if thread_candidates else None
     active_thread_id = str(active_thread.get("thread_id")) if isinstance(active_thread, dict) else None
+    context_signals_v2_all = get_contact_context_signals_v2(contact_id, limit=30)
+    topic_context_terms = _topic_terms_from_context_signals(context_signals_v2_all, max_terms=4)
 
     hybrid_query_parts: list[str] = [query]
+    if opportunity_context:
+        hybrid_query_parts.extend(
+            str(opportunity_context.get(key) or "") for key in ("title", "company_name") if opportunity_context.get(key)
+        )
     hybrid_query_parts.extend(str(path.get("path_text") or "") for path in graph_paths[:3])
     if active_thread:
         hybrid_query_parts.extend(str(item) for item in active_thread.get("recent_subjects", [])[:2])
     hybrid_query_parts.extend(graph_focus_terms[:6])
+    hybrid_query_parts.extend(topic_context_terms)
     graph_query = " ".join(part.strip() for part in hybrid_query_parts if isinstance(part, str) and part.strip())[:900]
 
     vector_chunks = search_chunks(db, query=graph_query or query, top_k=24, contact_id=contact_id)
@@ -717,7 +797,7 @@ def build_retrieval_bundle(
     settings = get_settings()
     accepted_claims: list[dict[str, Any]] = []
     if settings.graph_v2_enabled and settings.graph_v2_read_v2:
-        for signal in get_contact_context_signals_v2(contact_id, limit=30):
+        for signal in context_signals_v2_all[:30]:
             status = str(signal.get("status") or "proposed").lower()
             confidence = float(signal.get("confidence") or 0.0)
             sensitive = bool(signal.get("sensitive", False))
@@ -775,7 +855,7 @@ def build_retrieval_bundle(
             continue
         assertion_trace.append(item)
 
-    context_signals_v2 = get_contact_context_signals_v2(contact_id, limit=12)
+    context_signals_v2 = context_signals_v2_all[:12]
     motivator_signals = []
     for signal in context_signals_v2:
         claim_type = str(signal.get("claim_type") or "").lower()
@@ -814,6 +894,31 @@ def build_retrieval_bundle(
         objective_query=query,
         motivator_signals=motivator_signals,
     )
+    opportunity_next_steps: list[dict[str, Any]] = []
+    if opportunity_context and opportunity_context.get("opportunity_id"):
+        opportunity_next_steps = get_latest_next_step_suggestions_v2(
+            opportunity_id=str(opportunity_context.get("opportunity_id")),
+            limit=3,
+        )
+        if not proposed_next_action:
+            for item in opportunity_next_steps:
+                summary = str(item.get("summary") or "").strip()
+                if summary:
+                    proposed_next_action = summary
+                    break
+        if opportunity_next_steps:
+            next_action_rationale = [
+                {
+                    "kind": "persisted_next_step",
+                    "summary": str(item.get("summary") or ""),
+                    "confidence": float(item.get("confidence") or 0.0),
+                    "source": item.get("source"),
+                    "opportunity_id": item.get("opportunity_id"),
+                    "due_at": item.get("due_at"),
+                    "evidence_refs": (item.get("evidence_refs") or [])[:3],
+                }
+                for item in opportunity_next_steps[:2]
+            ] + list(next_action_rationale or [])[:5]
 
     selected_recent_interactions = _select_recent_interactions(contact_interactions, active_thread_id)
     if active_thread:
@@ -871,7 +976,10 @@ def build_retrieval_bundle(
         "relationship_score_hint": relationship_score_hint,
         "hybrid_graph_query": graph_query,
         "graph_focus_terms": graph_focus_terms,
+        "topic_context_terms": topic_context_terms,
         "opportunity_thread": active_thread_payload,
+        "opportunity_context": opportunity_context,
+        "opportunity_next_step_context": opportunity_next_steps[:3],
         "proposed_next_action": proposed_next_action,
         "next_action_rationale": next_action_rationale,
         "allow_sensitive": allow_sensitive,

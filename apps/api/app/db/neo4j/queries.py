@@ -48,6 +48,21 @@ _STOPWORDS = {
     "then",
     "than",
 }
+_LOW_SIGNAL_GRAPH_PATH_TERMS = {
+    "call",
+    "catchup",
+    "chat",
+    "discussion",
+    "email",
+    "follow up",
+    "followup",
+    "hello",
+    "hi",
+    "message",
+    "note",
+    "thanks",
+    "update",
+}
 _LEGACY_SCORING_PREDICATE_EXCLUSIONS = {
     "discussed_topic",
     "contains",
@@ -1152,6 +1167,22 @@ def _as_components_json(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _as_json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return []
+        if isinstance(parsed, list):
+            return parsed
+    return []
+
+
 def get_latest_score_snapshots(contact_ids: list[str]) -> dict[str, dict[str, Any]]:
     if not contact_ids:
         return {}
@@ -1258,6 +1289,184 @@ def get_contact_score_snapshots(contact_id: str, limit: int = 30) -> list[dict[s
             }
         )
     return snapshots
+
+
+def upsert_next_step_suggestion_v2(
+    *,
+    scope_type: str,
+    scope_id: str,
+    summary: str,
+    suggestion_type: str,
+    source: str,
+    confidence: float,
+    contact_id: str | None = None,
+    opportunity_id: str | None = None,
+    case_id: str | None = None,
+    due_at: str | None = None,
+    freshness_score: float | None = None,
+    priority_score: float | None = None,
+    evidence_refs: list[dict[str, Any]] | None = None,
+) -> str:
+    normalized_scope_type = _normalize_text(scope_type).lower()
+    normalized_scope_id = _normalize_text(scope_id)
+    if not normalized_scope_type or not normalized_scope_id:
+        return ""
+    suggestion_id = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"next-step:{normalized_scope_type}:{normalized_scope_id}:{_normalize_text(suggestion_type)}",
+        )
+    )
+    with neo4j_session() as session:
+        if session is None:
+            return suggestion_id
+        if not _v2_graph_reads_enabled():
+            return suggestion_id
+        _session_run(
+            session,
+            _ontify_v2_read_cypher(
+                """
+            MERGE (ns:NextStepSuggestion {suggestion_id: $suggestion_id})
+            SET ns.scope_type = $scope_type,
+                ns.scope_id = $scope_id,
+                ns.summary = $summary,
+                ns.suggestion_type = $suggestion_type,
+                ns.source = $source,
+                ns.confidence = $confidence,
+                ns.contact_id = $contact_id,
+                ns.opportunity_id = $opportunity_id,
+                ns.case_id = $case_id,
+                ns.due_at = CASE WHEN $due_at IS NULL OR $due_at = "" THEN ns.due_at ELSE $due_at END,
+                ns.freshness_score = $freshness_score,
+                ns.priority_score = $priority_score,
+                ns.evidence_refs_json = $evidence_refs_json,
+                ns.updated_at = datetime($updated_at)
+            """
+            ),
+            suggestion_id=suggestion_id,
+            scope_type=normalized_scope_type,
+            scope_id=normalized_scope_id,
+            summary=_normalize_text(summary, max_chars=1200),
+            suggestion_type=_normalize_text(suggestion_type, max_chars=80),
+            source=_normalize_text(source, max_chars=80),
+            confidence=float(confidence or 0.0),
+            contact_id=_normalize_text(contact_id) or None,
+            opportunity_id=_normalize_text(opportunity_id) or None,
+            case_id=_normalize_text(case_id) or None,
+            due_at=_normalize_text(due_at) or None,
+            freshness_score=float(freshness_score) if freshness_score is not None else None,
+            priority_score=float(priority_score) if priority_score is not None else None,
+            evidence_refs_json=json.dumps(evidence_refs or [], ensure_ascii=True, separators=(",", ":")),
+            updated_at=_now_iso(),
+        )
+        if contact_id:
+            _session_run(
+                session,
+                _ontify_v2_read_cypher(
+                    """
+                MATCH (c:CRMContact {external_id: $contact_id})
+                MATCH (ns:NextStepSuggestion {suggestion_id: $suggestion_id})
+                MERGE (c)-[:HAS_NEXT_STEP]->(ns)
+                """
+                ),
+                contact_id=_normalize_text(contact_id),
+                suggestion_id=suggestion_id,
+            )
+        if opportunity_id:
+            _session_run(
+                session,
+                _ontify_v2_read_cypher(
+                    """
+                MATCH (opp:CRMOpportunity {external_id: $opportunity_id})
+                MATCH (ns:NextStepSuggestion {suggestion_id: $suggestion_id})
+                MERGE (opp)-[:HAS_NEXT_STEP]->(ns)
+                """
+                ),
+                opportunity_id=_normalize_text(opportunity_id),
+                suggestion_id=suggestion_id,
+            )
+        if case_id:
+            _session_run(
+                session,
+                _ontify_v2_read_cypher(
+                    """
+                MATCH (co:CaseOpportunity {case_id: $case_id})
+                MATCH (ns:NextStepSuggestion {suggestion_id: $suggestion_id})
+                MERGE (co)-[:HAS_NEXT_STEP]->(ns)
+                """
+                ),
+                case_id=_normalize_text(case_id),
+                suggestion_id=suggestion_id,
+            )
+    return suggestion_id
+
+
+def get_latest_next_step_suggestions_v2(
+    *,
+    contact_id: str | None = None,
+    opportunity_id: str | None = None,
+    case_id: str | None = None,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    if not _v2_graph_reads_enabled():
+        return []
+    with neo4j_session() as session:
+        if session is None:
+            return []
+        rows = _session_run(
+            session,
+            _ontify_v2_read_cypher(
+                """
+            MATCH (ns:NextStepSuggestion)
+            WHERE ($contact_id IS NULL OR coalesce(ns.contact_id, "") = $contact_id)
+              AND ($opportunity_id IS NULL OR coalesce(ns.opportunity_id, "") = $opportunity_id)
+              AND ($case_id IS NULL OR coalesce(ns.case_id, "") = $case_id)
+            RETURN ns.suggestion_id AS suggestion_id,
+                   ns.scope_type AS scope_type,
+                   ns.scope_id AS scope_id,
+                   ns.summary AS summary,
+                   ns.suggestion_type AS suggestion_type,
+                   ns.source AS source,
+                   ns.confidence AS confidence,
+                   ns.contact_id AS contact_id,
+                   ns.opportunity_id AS opportunity_id,
+                   ns.case_id AS case_id,
+                   ns.due_at AS due_at,
+                   ns.freshness_score AS freshness_score,
+                   ns.priority_score AS priority_score,
+                   ns.evidence_refs_json AS evidence_refs_json,
+                   ns.updated_at AS updated_at
+            ORDER BY ns.updated_at DESC
+            LIMIT $limit
+            """
+            ),
+            contact_id=_normalize_text(contact_id) or None,
+            opportunity_id=_normalize_text(opportunity_id) or None,
+            case_id=_normalize_text(case_id) or None,
+            limit=max(1, limit),
+        ).data()
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        results.append(
+            {
+                "suggestion_id": row.get("suggestion_id"),
+                "scope_type": row.get("scope_type"),
+                "scope_id": row.get("scope_id"),
+                "summary": row.get("summary"),
+                "type": row.get("suggestion_type"),
+                "source": row.get("source"),
+                "confidence": _as_float(row.get("confidence")),
+                "contact_id": row.get("contact_id"),
+                "opportunity_id": row.get("opportunity_id"),
+                "case_id": row.get("case_id"),
+                "due_at": row.get("due_at"),
+                "freshness_score": _as_float(row.get("freshness_score")),
+                "priority_score": _as_float(row.get("priority_score")),
+                "evidence_refs": [item for item in _as_json_list(row.get("evidence_refs_json")) if isinstance(item, dict)],
+                "updated_at": row.get("updated_at"),
+            }
+        )
+    return results
 
 
 def get_contact_claims(contact_id: str, status: str | None = None) -> list[dict[str, Any]]:
@@ -1588,17 +1797,65 @@ def _contact_graph_path_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
             latest_dt = datetime.fromisoformat(latest_seen_at.replace("Z", "+00:00")).astimezone(timezone.utc)
         except ValueError:
             latest_dt = None
+    try:
+        noise_penalty = float(item.get("noise_penalty", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        noise_penalty = 0.0
     null_time_rank = 1 if latest_dt is None else 0
     latest_ts_rank = -latest_dt.timestamp() if latest_dt is not None else 0.0
     return (
         int(item.get("uncertain_hops") or 0),
         -int(item.get("opportunity_hits") or 0),
+        noise_penalty,
         null_time_rank,
         latest_ts_rank,
         -float(item.get("avg_confidence") or 0.0),
         int(item.get("hops") or 0),
         str(item.get("path_text") or ""),
     )
+
+
+def _normalized_compact_text(value: Any) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(value or "").lower())).strip()
+
+
+def _graph_path_noise_penalty(
+    *,
+    path_kind: str,
+    predicates: list[str],
+    tail_node: str | None,
+    claim_type: str | None = None,
+    keyword_hits: int = 0,
+    opportunity_hits: int = 0,
+) -> float:
+    penalty = 0.0
+    normalized_kind = _normalize_text(path_kind).lower()
+    normalized_claim_type = _normalize_text(claim_type or "").lower()
+    normalized_predicates = {_normalize_text(pred).lower() for pred in predicates if isinstance(pred, str)}
+    tail_norm = _normalized_compact_text(tail_node)
+
+    if normalized_kind == "coworker":
+        penalty += 0.04
+    if normalized_kind == "assertion":
+        if normalized_claim_type == "relationship_signal":
+            penalty += 0.08
+        if normalized_claim_type == "topic":
+            penalty += 0.18
+        if normalized_predicates & {"related_to", "mentions", "discussed_topic"}:
+            penalty += 0.08
+        if tail_norm in _LOW_SIGNAL_GRAPH_PATH_TERMS:
+            penalty += 0.20
+        elif len(tail_norm) <= 3:
+            penalty += 0.15
+        if normalized_predicates == {"related_to"} and not opportunity_hits:
+            penalty += 0.05
+
+    if keyword_hits > 0:
+        penalty -= min(0.12, keyword_hits * 0.05)
+    if opportunity_hits > 0:
+        penalty -= 0.06
+
+    return round(max(0.0, min(0.5, penalty)), 4)
 
 
 def _contact_graph_paths_v2(
@@ -1741,6 +1998,12 @@ def _contact_graph_paths_v2(
         seen_keys.add(key)
         results.append(entry)
 
+    def _keyword_hits(path_text: str) -> int:
+        if not keywords:
+            return 0
+        lowered = path_text.lower()
+        return sum(1 for keyword in keywords if keyword in lowered)
+
     for row in rows:
         contact_name = _normalize_text(row.get("contact_name")) or contact_id
         company_name = _normalize_text(row.get("company_name"))
@@ -1762,6 +2025,12 @@ def _contact_graph_paths_v2(
                 "latest_seen_at": latest_seen_at,
                 "recency_days": (datetime.now(timezone.utc) - latest_dt).days if latest_dt else None,
                 "opportunity_hits": 0,
+                "path_kind": "employment",
+                "noise_penalty": _graph_path_noise_penalty(
+                    path_kind="employment",
+                    predicates=["works_at"],
+                    tail_node=company_name,
+                ),
             }
         )
 
@@ -1790,6 +2059,12 @@ def _contact_graph_paths_v2(
                 "latest_seen_at": latest_seen_at,
                 "recency_days": (datetime.now(timezone.utc) - latest_dt).days if latest_dt else None,
                 "opportunity_hits": 0,
+                "path_kind": "coworker",
+                "noise_penalty": _graph_path_noise_penalty(
+                    path_kind="coworker",
+                    predicates=["works_at", "works_at"],
+                    tail_node=coworker_name,
+                ),
             }
         )
 
@@ -1811,6 +2086,24 @@ def _contact_graph_paths_v2(
         path_text = _build_path_text([contact_name, object_name], [predicate])
         if not path_text:
             continue
+        keyword_hits = _keyword_hits(path_text)
+        opportunity_hits = 1 if claim_type == "opportunity" else 0
+        noise_penalty = _graph_path_noise_penalty(
+            path_kind="assertion",
+            predicates=[predicate],
+            tail_node=object_name,
+            claim_type=claim_type,
+            keyword_hits=keyword_hits,
+            opportunity_hits=opportunity_hits,
+        )
+        if (
+            claim_type in {"relationship_signal", "topic"}
+            and noise_penalty >= 0.18
+            and keyword_hits == 0
+            and opportunity_hits == 0
+        ):
+            # Defensive query-layer filter for legacy/noisy assertions even if worker filters were weaker.
+            continue
         _append_path(
             {
                 "path_text": path_text,
@@ -1825,7 +2118,10 @@ def _contact_graph_paths_v2(
                 "uncertain_hops": 1 if uncertain else 0,
                 "latest_seen_at": latest_seen_at,
                 "recency_days": (datetime.now(timezone.utc) - latest_dt).days if latest_dt else None,
-                "opportunity_hits": 1 if claim_type == "opportunity" else 0,
+                "opportunity_hits": opportunity_hits,
+                "claim_type": claim_type,
+                "path_kind": "assertion",
+                "noise_penalty": noise_penalty,
             }
         )
 
@@ -1852,6 +2148,13 @@ def _contact_graph_paths_v2(
                 "latest_seen_at": latest_seen_at,
                 "recency_days": (datetime.now(timezone.utc) - latest_dt).days if latest_dt else None,
                 "opportunity_hits": 1,
+                "path_kind": "case_opportunity",
+                "noise_penalty": _graph_path_noise_penalty(
+                    path_kind="case_opportunity",
+                    predicates=["case_opportunity"],
+                    tail_node=tail,
+                    opportunity_hits=1,
+                ),
             }
         )
 
@@ -1876,6 +2179,13 @@ def _contact_graph_paths_v2(
                 "latest_seen_at": latest_seen_at,
                 "recency_days": (datetime.now(timezone.utc) - latest_dt).days if latest_dt else None,
                 "opportunity_hits": 1,
+                "path_kind": "opportunity",
+                "noise_penalty": _graph_path_noise_penalty(
+                    path_kind="opportunity",
+                    predicates=["opportunity"],
+                    tail_node=tail,
+                    opportunity_hits=1,
+                ),
             }
         )
 
@@ -1887,8 +2197,10 @@ def _contact_graph_paths_v2(
         if not path_text:
             continue
         lower = path_text.lower()
-        if keywords and not any(keyword in lower for keyword in keywords) and int(row.get("opportunity_hits") or 0) <= 0:
+        keyword_hits = int(row.get("keyword_hits") or 0) if "keyword_hits" in row else sum(1 for keyword in keywords if keyword in lower)
+        if keywords and keyword_hits == 0 and int(row.get("opportunity_hits") or 0) <= 0:
             continue
+        row["keyword_hits"] = keyword_hits
         filtered.append(row)
 
     filtered.sort(key=_contact_graph_path_sort_key)
@@ -3411,7 +3723,7 @@ def list_open_opportunities_v2(limit: int = 100) -> list[dict[str, Any]]:
                    toString(max(eng.occurred_at)) AS last_engagement_at,
                    toString(opp.updated_at) AS updated_at,
                    toString(opp.created_at) AS created_at
-            ORDER BY coalesce(opp.updated_at, datetime('1970-01-01T00:00:00Z')) DESC, opp.external_id ASC
+            ORDER BY coalesce(updated_at, '1970-01-01T00:00:00Z') DESC, opportunity_id ASC
             LIMIT $limit
             """
             ),
@@ -3441,8 +3753,11 @@ def find_best_opportunity_for_interaction_v2(
     thread_id: str | None,
     company_name: str | None,
     contact_ids: list[str],
+    subject_hint: str | None = None,
+    body_hint: str | None = None,
     limit: int = 30,
 ) -> dict[str, Any] | None:
+    cutoff_30d = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
     with neo4j_session() as session:
         if session is None:
             return None
@@ -3453,10 +3768,14 @@ def find_best_opportunity_for_interaction_v2(
             WHERE coalesce(opp.status, "open") = "open"
             OPTIONAL MATCH (opp)-[:OPPORTUNITY_FOR_COMPANY]->(co:CRMCompany)
             OPTIONAL MATCH (opp)-[:INVOLVES_CONTACT]->(ct:CRMContact)
+            OPTIONAL MATCH (eng:CRMEngagement)-[:ENGAGED_OPPORTUNITY|ENGAGED_OPPORTUNITY_DERIVED]->(opp)
                 RETURN opp.external_id AS opportunity_id,
                        opp.title AS title,
                        opp.last_thread_id AS last_thread_id,
                        opp.updated_at AS updated_at,
+                       max(eng.occurred_at) AS last_engagement_at,
+                       count(DISTINCT CASE WHEN eng.occurred_at >= datetime($cutoff_30d) THEN eng END) AS recent_engagement_count_30d,
+                       count(DISTINCT CASE WHEN eng.occurred_at >= datetime($cutoff_30d) AND toLower(coalesce(eng.direction, "")) = "in" THEN eng END) AS recent_inbound_count_30d,
                        opp.stage AS stage,
                        opp.status AS status,
                        co.name AS company_name,
@@ -3465,10 +3784,16 @@ def find_best_opportunity_for_interaction_v2(
             """
             ),
             limit=max(1, limit),
+            cutoff_30d=cutoff_30d,
         ).data()
     company_norm = _normalize_key(company_name)
     thread_norm = _normalize_text(thread_id)
     contact_set = {item for item in contact_ids if isinstance(item, str) and item}
+    hint_tokens = {
+        tok
+        for tok in re.findall(r"[a-zA-Z0-9]{3,}", " ".join(part for part in [subject_hint or "", body_hint or ""]).lower())
+        if tok
+    }
 
     def _parse_dt(value: Any) -> datetime | None:
         if value is None:
@@ -3493,6 +3818,47 @@ def find_best_opportunity_for_interaction_v2(
             return -0.05
         return 0.0
 
+    def _lexical_match_points(row: dict[str, Any]) -> float:
+        if not hint_tokens:
+            return 0.0
+        row_tokens = {
+            tok
+            for tok in re.findall(
+                r"[a-zA-Z0-9]{3,}",
+                " ".join(
+                    part for part in [str(row.get("title") or ""), str(row.get("company_name") or ""), str(row.get("stage") or "")]
+                ).lower(),
+            )
+            if tok
+        }
+        if not row_tokens:
+            return 0.0
+        overlap = len(hint_tokens & row_tokens)
+        if overlap <= 0:
+            return 0.0
+        return min(0.15, (overlap / max(1, len(hint_tokens))) * 0.15)
+
+    def _stage_compatibility_points(row: dict[str, Any]) -> float:
+        stage = _normalize_text(row.get("stage")).lower()
+        if not stage:
+            return 0.0
+        if any(term in stage for term in ("closed", "won", "lost")):
+            return -0.08
+        if any(term in stage for term in ("discovery", "proposal", "pilot", "evaluation", "negotiation")):
+            return 0.03
+        return 0.0
+
+    def _activity_pressure_points(row: dict[str, Any]) -> float:
+        recent_engagement_count = int(row.get("recent_engagement_count_30d") or 0)
+        recent_inbound_count = int(row.get("recent_inbound_count_30d") or 0)
+        if recent_engagement_count <= 0:
+            return 0.0
+        activity_points = min(0.08, recent_engagement_count * 0.025)
+        outbound_count = max(0, recent_engagement_count - recent_inbound_count)
+        open_loop_proxy = max(0, recent_inbound_count - outbound_count)
+        open_loop_points = min(0.06, open_loop_proxy * 0.03)
+        return round(activity_points + open_loop_points, 4)
+
     best: dict[str, Any] | None = None
     best_score = 0.0
     for row in rows:
@@ -3502,6 +3868,9 @@ def find_best_opportunity_for_interaction_v2(
             "company_match": 0.0,
             "contact_overlap": 0.0,
             "recency": 0.0,
+            "lexical_similarity": 0.0,
+            "stage_compatibility": 0.0,
+            "activity_pressure": 0.0,
         }
         if thread_norm and _normalize_text(row.get("last_thread_id")) == thread_norm:
             score += 0.45
@@ -3518,6 +3887,15 @@ def find_best_opportunity_for_interaction_v2(
         recency_points = _recency_match_points(row.get("updated_at"))
         score += recency_points
         score_components["recency"] = round(recency_points, 4)
+        lexical_points = _lexical_match_points(row)
+        score += lexical_points
+        score_components["lexical_similarity"] = round(lexical_points, 4)
+        stage_points = _stage_compatibility_points(row)
+        score += stage_points
+        score_components["stage_compatibility"] = round(stage_points, 4)
+        activity_points = _activity_pressure_points(row)
+        score += activity_points
+        score_components["activity_pressure"] = round(activity_points, 4)
 
         if score > best_score or (
             best is not None and abs(score - best_score) < 1e-9 and str(row.get("updated_at") or "") > str(best.get("updated_at") or "")
@@ -3543,6 +3921,33 @@ def find_best_opportunity_for_interaction_v2(
                         "weight": score_components["recency"],
                     }
                 )
+            if score_components["lexical_similarity"] > 0:
+                reason_chain.append(
+                    {
+                        "kind": "lexical_similarity",
+                        "weight": score_components["lexical_similarity"],
+                        "subject_hint": subject_hint,
+                    }
+                )
+            if score_components["stage_compatibility"] != 0:
+                reason_chain.append(
+                    {
+                        "kind": "stage_compatibility",
+                        "stage": row.get("stage"),
+                        "weight": score_components["stage_compatibility"],
+                    }
+                )
+            if score_components["activity_pressure"] > 0:
+                reason_chain.append(
+                    {
+                        "kind": "activity_pressure",
+                        "recent_engagement_count_30d": int(row.get("recent_engagement_count_30d") or 0),
+                        "recent_inbound_count_30d": int(row.get("recent_inbound_count_30d") or 0),
+                        "last_engagement_at": row.get("last_engagement_at"),
+                        "weight": score_components["activity_pressure"],
+                        "note": "Includes inbound-heavy open-loop proxy weighting.",
+                    }
+                )
             best_score = score
             best = {
                 "opportunity_id": row.get("opportunity_id"),
@@ -3550,8 +3955,11 @@ def find_best_opportunity_for_interaction_v2(
                 "score": round(score, 4),
                 "company_name": row.get("company_name"),
                 "updated_at": row.get("updated_at"),
+                "last_engagement_at": row.get("last_engagement_at"),
                 "status": row.get("status"),
                 "stage": row.get("stage"),
+                "recent_engagement_count_30d": int(row.get("recent_engagement_count_30d") or 0),
+                "recent_inbound_count_30d": int(row.get("recent_inbound_count_30d") or 0),
                 "score_components": score_components,
                 "reason_chain": reason_chain,
             }
@@ -3818,7 +4226,7 @@ def get_contact_context_signals_v2(contact_id: str, limit: int = 10) -> list[dic
             "confidence": _as_float(row.get("confidence")),
             "status": row.get("status") or "proposed",
             "sensitive": bool(row.get("sensitive", False)),
-            "updated_at": row.get("updated_at"),
+            "updated_at": (str(row.get("updated_at")) if row.get("updated_at") is not None else None),
         }
         for row in rows
     ]

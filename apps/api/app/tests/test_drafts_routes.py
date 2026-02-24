@@ -354,6 +354,68 @@ def test_create_draft_passes_and_records_policy_flags(monkeypatch) -> None:
         db.close()
 
 
+def test_create_draft_passes_opportunity_id_to_retrieval_bundle_and_persists_prompt_metadata(monkeypatch) -> None:
+    reset_db()
+    captured: dict = {}
+
+    def _fake_bundle(*args, **kwargs):  # noqa: ANN001
+        captured["kwargs"] = kwargs
+        return {
+            "contact": {"display_name": "Jamie", "primary_email": "jamie@example.com"},
+            "recent_interactions": [],
+            "recent_interactions_global": [],
+            "relevant_chunks": [],
+            "email_context_snippets": [],
+            "graph_claim_snippets": [],
+            "graph_path_snippets": [],
+            "graph_paths": [],
+            "graph_metrics": {},
+            "assertion_evidence_trace": [],
+            "internal_assertion_evidence_trace": [],
+            "context_signals_v2": [],
+            "motivator_signals": [],
+            "relationship_score_hint": None,
+            "hybrid_graph_query": "follow up acme renewal",
+            "graph_focus_terms": [],
+            "opportunity_thread": {"thread_id": "thread-opp"},
+            "opportunity_context": {"opportunity_id": "opp-77", "title": "Acme Renewal", "company_name": "Acme"},
+            "proposed_next_action": "Confirm timeline",
+            "next_action_rationale": [],
+            "allow_sensitive": False,
+            "allow_uncertain_context": False,
+            "allow_proposed_changes_in_external_text": False,
+            "policy_flags": {"allow_sensitive": False},
+            "objective": "Advance renewal",
+            "retrieval_asof": "2026-02-24T00:00:00Z",
+        }
+
+    monkeypatch.setattr(drafts_route, "build_retrieval_bundle", _fake_bundle)
+    monkeypatch.setattr(drafts_route, "resolve_tone_band", lambda *_args, **_kwargs: {"tone_band": "warm_professional"})
+    monkeypatch.setattr(drafts_route, "compose_draft", lambda *_args, **_kwargs: "Draft body")
+    monkeypatch.setattr(drafts_route, "compose_subject", lambda *_args, **_kwargs: "Subject")
+    monkeypatch.setattr(drafts_route, "build_citations_from_bundle", lambda *_args, **_kwargs: [])
+
+    response = client.post(
+        "/v1/drafts",
+        json={
+            "contact_id": "contact-opp",
+            "objective": "Advance renewal",
+            "opportunity_id": "opp-77",
+        },
+    )
+    assert response.status_code == 200
+    assert captured["kwargs"]["opportunity_id"] == "opp-77"
+
+    db = SessionLocal()
+    try:
+        saved = db.query(Draft).order_by(Draft.created_at.desc()).first()
+        assert saved is not None
+        prompt_json = saved.prompt_json or {}
+        assert prompt_json["opportunity_id"] == "opp-77"
+    finally:
+        db.close()
+
+
 def test_create_draft_blocks_when_generated_text_leaks_disallowed_internal_assertion(monkeypatch) -> None:
     reset_db()
     monkeypatch.setattr(
@@ -424,3 +486,74 @@ def test_create_draft_blocks_when_generated_text_leaks_disallowed_internal_asser
     payload = response.json()
     assert "outside the allowed evidence/policy scope" in payload["detail"]["message"]
     assert payload["detail"]["violations"][0]["type"] == "uncertain_assertion_leak"
+
+
+def test_create_draft_does_not_block_on_low_signal_topic_overlap(monkeypatch) -> None:
+    reset_db()
+    monkeypatch.setattr(
+        drafts_route,
+        "build_retrieval_bundle",
+        lambda *_args, **_kwargs: {
+            "contact": {"display_name": "Mike", "primary_email": "mike@example.com"},
+            "recent_interactions": [],
+            "recent_interactions_global": [],
+            "relevant_chunks": [],
+            "email_context_snippets": [],
+            "graph_claim_snippets": [],
+            "graph_path_snippets": [],
+            "graph_paths": [],
+            "graph_metrics": {},
+            "assertion_evidence_trace": [],
+            "internal_assertion_evidence_trace": [
+                {
+                    "assertion_id": "a-topic",
+                    "claim_type": "topic",
+                    "object_name": "Mike",
+                    "status": "proposed",
+                    "confidence": 0.75,
+                    "evidence": [],
+                }
+            ],
+            "context_signals_v2": [],
+            "motivator_signals": [],
+            "relationship_score_hint": None,
+            "hybrid_graph_query": "follow up",
+            "graph_focus_terms": [],
+            "opportunity_thread": None,
+            "proposed_next_action": None,
+            "next_action_rationale": [],
+            "allow_sensitive": False,
+            "allow_uncertain_context": False,
+            "allow_proposed_changes_in_external_text": False,
+            "policy_flags": {
+                "allow_sensitive": False,
+                "allow_uncertain_context": False,
+                "allow_proposed_changes_in_external_text": False,
+            },
+            "objective": "follow up",
+            "retrieval_asof": "2026-02-24T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(drafts_route, "resolve_tone_band", lambda *_args, **_kwargs: {"tone_band": "warm_professional"})
+    monkeypatch.setattr(
+        drafts_route,
+        "compose_draft",
+        lambda *_args, **_kwargs: "Hi Mike,\n\nJust checking in on priorities and next steps.\n\nBest,\n[Your Name]",
+    )
+    monkeypatch.setattr(drafts_route, "compose_subject", lambda *_args, **_kwargs: "Checking in")
+    monkeypatch.setattr(drafts_route, "build_citations_from_bundle", lambda *_args, **_kwargs: [])
+
+    response = client.post(
+        "/v1/drafts",
+        json={
+            "contact_id": "contact-topic",
+            "objective": "follow up",
+            "allow_sensitive": False,
+            "allow_uncertain_context": False,
+            "allow_proposed_changes_in_external_text": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["draft_subject"] == "Checking in"

@@ -102,6 +102,36 @@ def _recency_signal(latest_seen_at: Any, *, max_days: int = 180) -> float:
     return max(0.0, 1.0 - min(age_days, float(max_days)) / float(max_days))
 
 
+def _weighted_graph_signal(graph_meta: dict[str, Any]) -> float:
+    if not isinstance(graph_meta, dict):
+        return 0.0
+    evidence_refs = [ref for ref in (graph_meta.get("evidence_refs") or []) if isinstance(ref, dict)]
+    if not evidence_refs:
+        raw_hits = float(graph_meta.get("graph_hits", 0) or 0)
+        return min(1.0, raw_hits / 10.0)
+
+    weighted_hits = 0.0
+    seen_assertions: set[str] = set()
+    topic_hits = 0
+    for ref in evidence_refs:
+        assertion_id = str(ref.get("assertion_id") or "").strip()
+        claim_type = str(ref.get("claim_type") or "").lower().strip()
+        if not assertion_id and not claim_type:
+            continue
+        if assertion_id and assertion_id in seen_assertions:
+            continue
+        if assertion_id:
+            seen_assertions.add(assertion_id)
+        if claim_type == "topic":
+            topic_hits += 1
+            weighted_hits += 0.35 if topic_hits > 2 else 0.6
+        else:
+            weighted_hits += 1.0
+    company_hits = len([ref for ref in evidence_refs if ref.get("kind") == "company_association"])
+    weighted_hits += min(2.0, company_hits * 0.6)
+    return round(min(1.0, weighted_hits / 8.0), 4)
+
+
 def _graph_candidates(keywords: list[str], limit: int) -> dict[str, dict[str, Any]]:
     settings = get_settings()
     use_v2 = bool(settings.graph_v2_enabled and settings.graph_v2_read_v2)
@@ -422,7 +452,7 @@ def match_contacts_for_news(db: Session, article_text: str, max_results: int = 1
         profile_text = _build_contact_profile(contact, contact_interactions, claim_lines)
         profile_vector = embed_texts([profile_text])[0]
         vector_similarity = max(0.0, _cosine_similarity(article_vector, profile_vector))
-        graph_signal = min(1.0, float(graph_meta.get("graph_hits", 0)) / 10.0)
+        graph_signal = _weighted_graph_signal(graph_meta)
         lexical_signal = float(lexical_meta.get("lexical_signal", 0.0))
         graph_recency_signal = _recency_signal(graph_meta.get("latest_seen_at"))
         interaction_recency_signal = _recency_signal(lexical_meta.get("latest_interaction_match_at"))
@@ -446,6 +476,7 @@ def match_contacts_for_news(db: Session, article_text: str, max_results: int = 1
                             {
                                 "matched_keywords": graph_meta.get("matched_keywords", []),
                                 "graph_hits": graph_meta.get("graph_hits", 0),
+                                "graph_signal_weighted": graph_signal,
                                 "company_names": graph_meta.get("company_names", [])[:5],
                                 "latest_seen_at": graph_meta.get("latest_seen_at"),
                             }

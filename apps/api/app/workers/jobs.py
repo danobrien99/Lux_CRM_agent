@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import uuid
+from difflib import SequenceMatcher
 from statistics import mean
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -78,6 +79,20 @@ _LOW_SIGNAL_TEXT_TERMS = {
     "thanks",
     "thank you",
 }
+_LOW_SIGNAL_TOPIC_TERMS = {
+    "call",
+    "catchup",
+    "chat",
+    "discussion",
+    "email",
+    "followup",
+    "follow-up",
+    "meeting",
+    "message",
+    "note",
+    "sync",
+    "update",
+}
 _PERSISTABLE_GRAPH_CLAIM_TYPES = {
     "employment",
     "opportunity",
@@ -120,6 +135,16 @@ def _person_name_key(value: object) -> str:
 
 def _person_name_tokens(value: object) -> list[str]:
     return [tok for tok in _person_name_key(value).split(" ") if tok]
+
+
+def _speaker_candidate_confidence(speaker_name: str, candidate_name: str) -> float:
+    speaker_tokens = set(_person_name_tokens(speaker_name))
+    candidate_tokens = set(_person_name_tokens(candidate_name))
+    token_overlap = 0.0
+    if speaker_tokens and candidate_tokens:
+        token_overlap = len(speaker_tokens & candidate_tokens) / max(1, len(speaker_tokens | candidate_tokens))
+    seq_ratio = SequenceMatcher(a=_person_name_key(speaker_name), b=_person_name_key(candidate_name)).ratio()
+    return round(min(0.95, max(0.0, token_overlap * 0.65 + seq_ratio * 0.35)), 3)
 
 
 def _resolve_contact_ids(
@@ -199,6 +224,14 @@ def _resolve_contact_ids(
                     name_match_provenance[token_candidates[0].contact_id] = provenance
                     continue
                 if token_candidates:
+                    ranked_candidates = sorted(
+                        token_candidates,
+                        key=lambda candidate: (
+                            -_speaker_candidate_confidence(speaker_name, candidate.display_name or ""),
+                            _normalized_text(candidate.display_name or ""),
+                            candidate.contact_id,
+                        ),
+                    )
                     speaker_resolution_suggestions.append(
                         {
                             "speaker_name": speaker_name,
@@ -208,9 +241,9 @@ def _resolve_contact_ids(
                                     "contact_id": candidate.contact_id,
                                     "display_name": candidate.display_name,
                                     "primary_email": candidate.primary_email,
-                                    "confidence": 0.55,
+                                    "confidence": _speaker_candidate_confidence(speaker_name, candidate.display_name or ""),
                                 }
-                                for candidate in token_candidates[:5]
+                                for candidate in ranked_candidates[:5]
                             ],
                         }
                     )
@@ -592,6 +625,20 @@ def _is_persistable_graph_claim(claim: dict[str, Any]) -> bool:
     text = _claim_value_text(claim)
     if not text:
         return False
+    if claim_type == "topic":
+        text_norm = _normalized_compact(text)
+        confidence = float(claim.get("confidence") or 0.0)
+        if _is_low_signal_text(text):
+            return False
+        if text_norm in _LOW_SIGNAL_TOPIC_TERMS and confidence < 0.8:
+            return False
+    if claim_type == "relationship_signal":
+        if _is_low_signal_text(text):
+            return False
+        status = _normalized_text(claim.get("status")).lower() or "proposed"
+        confidence = float(claim.get("confidence") or 0.0)
+        if status not in {"accepted", "verified"} and confidence < 0.55:
+            return False
     if claim_type in {"opportunity", "commitment", "preference"} and _is_low_signal_text(text):
         return False
     return True
@@ -664,6 +711,57 @@ def _contradiction_task_payload(issue: dict[str, Any], *, interaction_id: str) -
             "proposed": _claim_evidence_refs(proposed_claim),
         },
     }
+
+
+def _relationship_signal_bonus_from_context_signals(signals: list[dict[str, Any]]) -> tuple[int, float]:
+    count = 0
+    for signal in signals:
+        if not isinstance(signal, dict):
+            continue
+        if _normalized_text(signal.get("claim_type")).lower() != "relationship_signal":
+            continue
+        status = _normalized_text(signal.get("status")).lower() or "proposed"
+        confidence = float(signal.get("confidence") or 0.0)
+        if status not in {"accepted", "verified"}:
+            continue
+        if confidence < 0.7:
+            continue
+        count += 1
+    return count, min(3.0, count * 0.6)
+
+
+def _persist_claim_assertions_v2(
+    *,
+    interaction_id: str,
+    contact_id: str,
+    claims: list[dict[str, Any]],
+    fallback_evidence_refs: list[dict[str, Any]],
+    source_system: str,
+    extractor: str,
+    stage: str,
+) -> int:
+    created = 0
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        claim_evidence_refs = (
+            claim.get("evidence_refs") if isinstance(claim.get("evidence_refs"), list) and claim.get("evidence_refs") else fallback_evidence_refs
+        )
+        create_assertion_with_evidence_v2(
+            interaction_id=interaction_id,
+            contact_id=contact_id,
+            claim=claim,
+            evidence_refs=claim_evidence_refs,
+            source_system=source_system,
+            extractor=extractor,
+            entity_status="provisional",
+            gate_results={
+                "stage": stage,
+                "has_required_evidence": True,
+            },
+        )
+        created += 1
+    return created
 
 
 def _claim_identity(claim: dict[str, object]) -> tuple[str, str]:
@@ -1167,6 +1265,8 @@ def process_interaction(interaction_id: str) -> None:
                     thread_id=interaction.thread_id,
                     company_name=company_hint,
                     contact_ids=all_contact_ids,
+                    subject_hint=interaction.subject,
+                    body_hint=body_text[:500] if isinstance(body_text, str) else None,
                 )
                 if best_opportunity and best_opportunity.get("meets_threshold"):
                     opportunity_id = str(best_opportunity.get("opportunity_id"))
@@ -1247,22 +1347,15 @@ def process_interaction(interaction_id: str) -> None:
 
             if prepared_candidates and evidence_refs:
                 write_claims_with_evidence(contact_id, interaction.interaction_id, prepared_candidates, evidence_refs)
-                for claim in prepared_candidates:
-                    create_assertion_with_evidence_v2(
-                        interaction_id=interaction.interaction_id,
-                        contact_id=contact_id,
-                        claim=claim,
-                        evidence_refs=(
-                            claim.get("evidence_refs") if isinstance(claim.get("evidence_refs"), list) and claim.get("evidence_refs") else evidence_refs
-                        ),
-                        source_system="cognee",
-                        extractor="cognee",
-                        entity_status="provisional",
-                        gate_results={
-                            "stage": "cognee_claims",
-                            "has_required_evidence": True,
-                        },
-                    )
+                _persist_claim_assertions_v2(
+                    interaction_id=interaction.interaction_id,
+                    contact_id=contact_id,
+                    claims=prepared_candidates,
+                    fallback_evidence_refs=evidence_refs,
+                    source_system="cognee",
+                    extractor="cognee",
+                    stage="cognee_claims",
+                )
             graph_relation_stats_cognee = _persist_relation_claims_for_contact(
                 db=db,
                 contact_id=contact_id,
@@ -1317,22 +1410,15 @@ def process_interaction(interaction_id: str) -> None:
             new_claims, new_claims_crm_promotable = _split_claim_pipelines(new_claims)
             if new_claims and evidence_refs:
                 write_claims_with_evidence(contact_id, interaction.interaction_id, new_claims, evidence_refs)
-                for claim in new_claims:
-                    create_assertion_with_evidence_v2(
-                        interaction_id=interaction.interaction_id,
-                        contact_id=contact_id,
-                        claim=claim,
-                        evidence_refs=(
-                            claim.get("evidence_refs") if isinstance(claim.get("evidence_refs"), list) and claim.get("evidence_refs") else evidence_refs
-                        ),
-                        source_system="mem0",
-                        extractor="mem0",
-                        entity_status="provisional",
-                        gate_results={
-                            "stage": "mem0_claims",
-                            "has_required_evidence": True,
-                        },
-                    )
+                _persist_claim_assertions_v2(
+                    interaction_id=interaction.interaction_id,
+                    contact_id=contact_id,
+                    claims=new_claims,
+                    fallback_evidence_refs=evidence_refs,
+                    source_system="mem0",
+                    extractor="mem0",
+                    stage="mem0_claims",
+                )
 
             contradictions = detect_contradictions(accepted_claims_after_cognee, new_claims)
             for issue in contradictions:
@@ -1401,9 +1487,13 @@ def process_interaction(interaction_id: str) -> None:
             motivator_signal_count = sum(
                 1 for signal in context_signals_v2 if _normalized_text(signal.get("claim_type")) in {"preference", "opportunity", "commitment"}
             )
+            relationship_signal_count, relationship_signal_bonus = _relationship_signal_bonus_from_context_signals(context_signals_v2)
             graph_warmth_bonus = min(
                 5.0,
-                graph_metrics.get("recent_relation_count", 0) * 0.35 + vector_alignment * 4.0 + motivator_signal_count * 0.25,
+                graph_metrics.get("recent_relation_count", 0) * 0.35
+                + vector_alignment * 4.0
+                + motivator_signal_count * 0.25
+                + relationship_signal_bonus,
             )
             graph_depth_bonus = min(
                 10,
@@ -1440,6 +1530,8 @@ def process_interaction(interaction_id: str) -> None:
             relationship_components["interaction_count_30d"] = int(count_30)
             relationship_components["interaction_count_90d"] = int(count_90)
             relationship_components["graph_warmth_bonus"] = round(graph_warmth_bonus, 3)
+            relationship_components["relationship_signal_count"] = int(relationship_signal_count)
+            relationship_components["relationship_signal_bonus"] = round(relationship_signal_bonus, 3)
             relationship_components["graph_depth_bonus"] = int(graph_depth_bonus)
             relationship_components["graph_vector_alignment"] = round(vector_alignment, 4)
             relationship_components["graph_path_count_2hop"] = int(graph_metrics.get("path_count_2hop", 0))

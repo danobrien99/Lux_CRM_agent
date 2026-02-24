@@ -95,3 +95,27 @@ def test_personal_detail_contradiction_detected() -> None:
 
     assert len(contradictions) == 1
     assert contradictions[0]["task_type"] == "personal_detail_discrepancy"
+
+
+def test_preference_contradiction_detected_for_same_preference_field() -> None:
+    existing = [
+        {
+            "claim_id": "pref-old",
+            "claim_type": "preference",
+            "status": "accepted",
+            "value_json": {"predicate": "communication_style", "object": "short email updates"},
+        }
+    ]
+    new_claims = [
+        {
+            "claim_id": "pref-new",
+            "claim_type": "preference",
+            "status": "proposed",
+            "value_json": {"predicate": "communication_style", "object": "phone calls"},
+        }
+    ]
+
+    contradictions = detect_contradictions(existing, new_claims)
+
+    assert len(contradictions) == 1
+    assert contradictions[0]["task_type"] == "preference_discrepancy"

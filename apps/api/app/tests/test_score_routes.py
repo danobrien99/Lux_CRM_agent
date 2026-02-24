@@ -200,16 +200,35 @@ def test_today_scores_uses_latest_snapshot_values(monkeypatch) -> None:
 def test_build_score_reason_includes_component_specific_evidence_refs() -> None:
     reason = scores._build_score_reason(
         "2026-02-24T10:00:00Z",
-        {"days_since_last": 18},
+        {"days_since_last": 18, "relationship_signal_count": 2, "relationship_signal_bonus": 1.2},
         {"open_loop_count": 2, "open_loops": 10.0, "trigger_score": 5.0, "triggers": 5.0},
         {"metrics": {"recent_relation_count": 3, "path_count_2hop": 7}},
     )
 
     kinds = {item.get("kind") for item in reason.evidence_refs if isinstance(item, dict)}
-    assert {"recency_driver", "open_loop_driver", "trigger_driver", "graph_boost_driver"} <= kinds
+    assert {"recency_driver", "open_loop_driver", "trigger_driver", "graph_boost_driver", "relationship_signal_driver"} <= kinds
     graph_ref = next(item for item in reason.evidence_refs if item.get("kind") == "graph_boost_driver")
     assert graph_ref["metrics"]["recent_relation_count"] == 3
     assert graph_ref["observed_at"] == "2026-02-24T10:00:00Z"
+    rel_ref = next(item for item in reason.evidence_refs if item.get("kind") == "relationship_signal_driver")
+    assert rel_ref["relationship_signal_count"] == 2
+    assert len(reason.evidence_refs) <= 10
+
+
+def test_build_score_reason_compacts_large_component_payloads() -> None:
+    large_relationship = {f"k{i}": i for i in range(60)}
+    large_relationship["graph_path_samples"] = [f"path-{i}" for i in range(20)]
+    reason = scores._build_score_reason(
+        "2026-02-24T10:00:00Z",
+        large_relationship,
+        {"open_loop_count": 0},
+        {"metrics": {"recent_relation_count": 1}},
+    )
+
+    component_ref = next(item for item in reason.evidence_refs if item.get("component") == "relationship")
+    values = component_ref["values"]
+    assert values.get("_truncated") is True
+    assert len(values) <= 30
 
 
 def test_contact_score_detail_prefers_llm_summary_when_available(monkeypatch) -> None:
@@ -480,6 +499,8 @@ def test_ranked_opportunities_returns_real_case_and_promoted_items(monkeypatch) 
         )
         db.commit()
 
+        persisted_calls: list[dict] = []
+        monkeypatch.setattr(scores, "upsert_next_step_suggestion_v2", lambda **kwargs: persisted_calls.append(kwargs) or "ns-1")
         monkeypatch.setattr(
             scores,
             "list_open_opportunities_v2",
@@ -532,5 +553,53 @@ def test_ranked_opportunities_returns_real_case_and_promoted_items(monkeypatch) 
         assert payload.items[0].next_step is not None
         assert payload.items[0].linked_contacts[0].display_name == "Alice"
         assert any(item.kind == "case_opportunity" for item in payload.items)
+        assert len(persisted_calls) >= 2
+        assert any(call.get("scope_type") == "opportunity" for call in persisted_calls)
+        assert any(call.get("scope_type") == "case_opportunity" for call in persisted_calls)
     finally:
         db.close()
+
+
+def test_refresh_summary_route_falls_back_to_cached_summary_on_refresh_error(monkeypatch) -> None:
+    reset_db()
+    db = SessionLocal()
+    try:
+        db.add(ContactCache(contact_id="32", primary_email="c32@example.com", display_name="Contact 32"))
+        db.commit()
+    finally:
+        db.close()
+
+    monkeypatch.setattr(scores, "refresh_cached_interaction_summary", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        scores,
+        "get_cached_interaction_summary",
+        lambda _contact_id: InteractionSummary(
+            total_interactions=1,
+            interaction_count_30d=1,
+            interaction_count_90d=1,
+            inbound_count=1,
+            outbound_count=0,
+            last_interaction_at=None,
+            last_subject="Cached",
+            recent_subjects=["Cached"],
+            recent_topics=["Pricing"],
+            priority_next_step="Reply",
+            next_step=None,
+            summary_source="heuristic",
+            priority_next_step_source="heuristic",
+            brief="Cached summary",
+        ),
+    )
+    monkeypatch.setattr(scores, "_extract_company_name", lambda *_args, **_kwargs: None)
+
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app)
+    response = client.post("/v1/scores/contact/32/refresh_summary", json={})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["contact_id"] == "32"
+    assert payload["refreshed"] is False
+    assert payload["interaction_summary"]["brief"] == "Cached summary"

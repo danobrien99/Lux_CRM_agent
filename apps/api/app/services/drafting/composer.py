@@ -62,6 +62,7 @@ def _compose_template_draft(bundle: dict, tone: dict) -> str:
     graph_path_snippets = bundle.get("graph_path_snippets", [])
     email_context_snippets = bundle.get("email_context_snippets", [])
     proposed_next_action = bundle.get("proposed_next_action")
+    opportunity_next_step_context = bundle.get("opportunity_next_step_context") or []
     opportunity_thread = bundle.get("opportunity_thread") if isinstance(bundle.get("opportunity_thread"), dict) else None
 
     if tone["tone_band"] == "cool_professional":
@@ -98,6 +99,10 @@ def _compose_template_draft(bundle: dict, tone: dict) -> str:
     context_lines.append(f"I wanted to {objective}.")
     if isinstance(proposed_next_action, str) and proposed_next_action.strip():
         context_lines.append(f"Suggested next step: {proposed_next_action.strip()}")
+    elif opportunity_next_step_context and isinstance(opportunity_next_step_context, list):
+        first_step = opportunity_next_step_context[0] if opportunity_next_step_context else {}
+        if isinstance(first_step, dict) and isinstance(first_step.get("summary"), str) and first_step["summary"].strip():
+            context_lines.append(f"Suggested next step: {first_step['summary'].strip()}")
     body = " ".join(context_lines)
 
     closer = "Best,\n[Your Name]"
@@ -130,6 +135,7 @@ def _compose_openai_draft(bundle: dict, tone: dict) -> str | None:
         "recent_interactions_global": (bundle.get("recent_interactions_global") or [])[:5],
         "opportunity_thread": bundle.get("opportunity_thread"),
         "proposed_next_action": bundle.get("proposed_next_action"),
+        "opportunity_next_step_context": (bundle.get("opportunity_next_step_context") or [])[:3],
         "next_action_rationale": (bundle.get("next_action_rationale") or [])[:6],
         "graph_focus_terms": (bundle.get("graph_focus_terms") or [])[:10],
         "motivator_signals": (bundle.get("motivator_signals") or [])[:8],

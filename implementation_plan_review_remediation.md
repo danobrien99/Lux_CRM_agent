@@ -202,17 +202,17 @@ Goal: Make ranking, news relevance, drafting, and citations trustworthy and time
 
 ### Issues Addressed in This Phase
 
-- [ ] `R4` News matching graph reads legacy labels under v2 mode
-- [ ] `R5` Time-aware graph path sort bug
-- [ ] `R7` Coarse claim provenance and weak draft citation mapping
-- [ ] `R8` Drafting policy/gating misalignment (`allow_sensitive`, provisional/uncertain handling, v2 accepted-claim gap)
+- [x] `R4` News matching graph reads legacy labels under v2 mode
+- [x] `R5` Time-aware graph path sort bug
+- [x] `R7` Coarse claim provenance and weak draft citation mapping
+- [x] `R8` Drafting policy/gating misalignment (`allow_sensitive`, provisional/uncertain handling, v2 accepted-claim gap)
 
 ### Workstream 2A: Fix Time-Aware Graph Path Ranking (`R5`)
 
 - [x] Patch `_contact_graph_paths_v2(...)` sorting to prefer newer `latest_seen_at` values rather than older ones.
 - [x] Sort by parsed datetime / recency integer where possible, not raw strings.
 - [x] Add deterministic fallback ordering for null timestamps.
-- [ ] Verify `lookback_days` filtering and final ranking are consistent with UI expectations.
+- [x] Verify `lookback_days` filtering and final ranking are consistent with UI expectations.
 
 ### Workstream 2B: Align News Matching with Graph v2 Read Mode (`R4`)
 
@@ -241,7 +241,7 @@ Goal: Make ranking, news relevance, drafting, and citations trustworthy and time
 - [x] Use extractor-provided spans (`evidence_spans`) when available to map claims to relevant chunk(s).
 - [x] Implement claim-to-chunk alignment fallback (text span / semantic overlap) when extractor spans are absent.
 - [x] Persist claim-level evidence refs that are specific enough for later drafting/scoring explainability.
-- [ ] Keep Neo4j evidence nodes pointer-based (chunk/span/hash only; no large verbatim text).
+- [x] Keep Neo4j evidence nodes pointer-based (chunk/span/hash only; no large verbatim text).
 
 #### Draft citation checklist
 
@@ -281,7 +281,7 @@ Goal: Make ranking, news relevance, drafting, and citations trustworthy and time
   - [x] commitment/opportunity triggers
   - [x] graph-derived boosts
 - [x] Include evidence quality metadata and timestamps to support "why score moved" explanations.
-- [ ] Ensure score responses are still lightweight enough for UI rendering.
+- [x] Ensure score responses are still lightweight enough for UI rendering.
 
 ### Phase 2 Testing Procedure (Must Pass Before Phase 3)
 
@@ -331,14 +331,14 @@ Goal: Improve the quality of extracted context, contact resolution, contradictio
   - [x] `graph_context_claims` (includes topic + relationship signals + other non-promotable but useful context)
   - [x] `crm_promotable_claims` (strict subset for case/opportunity promotion and high-value relation persistence)
 - [x] Add support for `topic` and `relationship_signal` persistence to v2 assertions with evidence.
-- [ ] Keep low-signal filtering, but tune it to avoid dropping valuable context terms.
-- [ ] Ensure scoring/drafting/news retrieval can consume these context assertions safely and with policy filtering.
+- [x] Keep low-signal filtering, but tune it to avoid dropping valuable context terms.
+- [x] Ensure scoring/drafting/news retrieval can consume these context assertions safely and with policy filtering.
 
 #### Retrieval/score integration checklist
 
-- [ ] Incorporate persisted relationship signals into relationship scoring (bounded contribution + evidence refs).
-- [ ] Incorporate topic context into news matching and draft retrieval queries.
-- [ ] Re-check graph path/ranking noise after adding topic persistence (prevent topic spam dominance).
+- [x] Incorporate persisted relationship signals into relationship scoring (bounded contribution + evidence refs).
+- [x] Incorporate topic context into news matching and draft retrieval queries.
+- [x] Re-check graph path/ranking noise after adding topic persistence (prevent topic spam dominance).
 
 ### Workstream 3B: Improve Transcript/Speaker Contact Resolution (`R9`)
 
@@ -348,7 +348,7 @@ Goal: Improve the quality of extracted context, contact resolution, contradictio
 - [x] Add deterministic speaker-name matching against contact cache:
   - [x] exact normalized display-name match
   - [x] first/last token match
-  - [ ] optional confidence scoring for fuzzy matches
+  - [x] optional confidence scoring for fuzzy matches
 - [x] When ambiguous, create identity resolution tasks with ranked candidate suggestions instead of auto-linking.
 - [x] Preserve provenance of how a contact match was made (`email_exact`, `name_exact`, `name_fuzzy`, `manual_resolution`).
 - [x] Avoid auto-linking internal-only or low-confidence ambiguous names.
@@ -365,7 +365,7 @@ Goal: Improve the quality of extracted context, contact resolution, contradictio
   - [x] opportunity stage/status or materially conflicting opportunity claims
   - [x] commitments / due dates / owners
   - [x] personal detail conflicts (with sensitivity-aware review)
-  - [ ] relationship-relevant facts (e.g., key preferences if mutually exclusive)
+  - [x] relationship-relevant facts (e.g., key preferences if mutually exclusive)
 - [x] Normalize comparison rules by claim type (avoid naive JSON inequality where semantic equality exists).
 - [x] Generate typed resolution tasks with concise, reviewable payloads and evidence refs.
 - [x] Prevent duplicate open contradiction tasks for the same semantic conflict.
@@ -378,15 +378,15 @@ Goal: Improve the quality of extracted context, contact resolution, contradictio
 
 This closes remaining quality gaps affecting your goals even if not isolated as a single issue ID.
 
-- [ ] Improve `find_best_opportunity_for_interaction_v2(...)` scoring beyond thread/company/contact overlap:
+- [x] Improve `find_best_opportunity_for_interaction_v2(...)` scoring beyond thread/company/contact overlap:
   - [x] recency of last engagement on opportunity
-  - [ ] lexical/semantic similarity between interaction subject/body and opportunity title/context
-  - [ ] active commitments/open loops attached to opportunity
-  - [ ] opportunity status/stage compatibility
+  - [x] lexical/semantic similarity between interaction subject/body and opportunity title/context
+  - [x] active commitments/open loops attached to opportunity
+  - [x] opportunity status/stage compatibility
 - [x] Record why an interaction was linked to an opportunity (scoring components + evidence).
-- [ ] Persist structured next-step suggestions at contact+opportunity level (not only free text).
-- [ ] Add time decay and freshness weighting for opportunity prioritization and next-step inference.
-- [ ] Ensure drafts can be generated against a specific `opportunity_id` and use opportunity-linked context.
+- [x] Persist structured next-step suggestions at contact+opportunity level (not only free text).
+- [x] Add time decay and freshness weighting for opportunity prioritization and next-step inference.
+- [x] Ensure drafts can be generated against a specific `opportunity_id` and use opportunity-linked context.
 
 ### Workstream 3E: End-to-End Knowledge Graph Context Quality Validation
 
@@ -403,15 +403,15 @@ This closes remaining quality gaps affecting your goals even if not isolated as 
 
 #### Automated tests (required)
 
-- [ ] Add worker tests proving `topic` / `relationship_signal` claims are persisted to graph assertions with evidence.
-- [ ] Add transcript resolution tests for:
+- [x] Add worker tests proving `topic` / `relationship_signal` claims are persisted to graph assertions with evidence.
+- [x] Add transcript resolution tests for:
   - [x] exact speaker-name match
   - [x] ambiguous match -> resolution task
   - [x] no match -> provisional / identity task behavior
 - [x] Add contradiction tests for at least three non-employment claim types with semantic comparisons.
-- [ ] Add opportunity matcher ranking tests covering recency and context similarity.
-- [ ] Add opportunity matcher ranking tests covering recency and context similarity.
-- [ ] Add draft retrieval tests for opportunity-linked drafting input and evidence-backed next-step context.
+- [x] Add opportunity matcher ranking tests covering recency and context similarity.
+- [x] Add opportunity matcher ranking tests covering recency and context similarity.
+- [x] Add draft retrieval tests for opportunity-linked drafting input and evidence-backed next-step context.
 
 #### Manual end-to-end scenario (required)
 
@@ -439,13 +439,13 @@ This closes remaining quality gaps affecting your goals even if not isolated as 
 - [ ] Phase 1 manual contact page validation passed
 
 ### `R2` Synthetic opportunities UI
-- [ ] Phase 1 / Workstream 1B completed
+- [x] Phase 1 / Workstream 1B completed
 - [ ] Phase 1 homepage opportunity data-source test passed
 - [ ] Phase 1 manual promotion -> homepage visibility validation passed
 
 ### `R3` Missing provisional/review UI actions
-- [ ] Phase 1 / Workstream 1C and 1D completed
-- [ ] Phase 1 `/cases` + `/resolution` UI action tests passed
+- [x] Phase 1 / Workstream 1C and 1D completed
+- [x] Phase 1 `/cases` + `/resolution` UI action tests passed
 - [ ] Phase 1 manual promote/resolve workflow passed
 
 ### `R4` News matching legacy graph reads under v2
@@ -458,8 +458,8 @@ This closes remaining quality gaps affecting your goals even if not isolated as 
 - [x] Phase 2 recency-order unit test passed
 
 ### `R6` Context claim drop (topics/relationship signals)
-- [ ] Phase 3 / Workstream 3A completed
-- [ ] Phase 3 worker persistence tests passed
+- [x] Phase 3 / Workstream 3A completed
+- [x] Phase 3 worker persistence tests passed
 
 ### `R7` Coarse provenance/citations
 - [x] Phase 2 / Workstream 2C completed
@@ -467,17 +467,17 @@ This closes remaining quality gaps affecting your goals even if not isolated as 
 - [ ] Phase 2 manual draft citation inspection passed
 
 ### `R8` Drafting trust/policy misalignment
-- [ ] Phase 2 / Workstream 2D and 2E completed
+- [x] Phase 2 / Workstream 2D and 2E completed
 - [x] Phase 2 policy gating tests passed
 - [ ] Phase 2 manual sensitive/proposed-change drafting checks passed
 
 ### `R9` Email-only contact matching (transcripts)
-- [ ] Phase 3 / Workstream 3B completed
+- [x] Phase 3 / Workstream 3B completed
 - [x] Phase 3 transcript resolution tests passed
 - [ ] Phase 3 manual ambiguous-speaker workflow passed
 
 ### `R10` Employment-only contradiction detection
-- [ ] Phase 3 / Workstream 3C completed
+- [x] Phase 3 / Workstream 3C completed
 - [x] Phase 3 multi-claim contradiction tests passed
 - [ ] Phase 3 manual contradiction resolution workflow passed
 
@@ -494,3 +494,21 @@ This closes remaining quality gaps affecting your goals even if not isolated as 
   - [ ] run news matching with explainable v2 graph evidence
   - [ ] generate evidence-backed, policy-compliant drafts linked to next steps/opportunities
 - [ ] Test evidence for each phase is recorded (commands + results + manual verification notes).
+
+---
+
+## Progress Notes (Automated Evidence Recorded; Manual Gates Pending)
+
+### Latest Automated Test Runs (2026-02-24)
+
+- [x] `cd apps/api && .venv/bin/python -m pytest -q app/tests/test_score_routes.py app/tests/test_drafting_retriever_policy.py app/tests/test_news_match.py app/tests/test_opportunity_matcher_v2.py app/tests/test_worker_claim_evidence_and_context.py` -> `29 passed`
+- [x] `cd apps/api && .venv/bin/python -m pytest -q app/tests/test_drafts_routes.py app/tests/test_drafting_retriever_policy.py app/tests/test_opportunity_matcher_v2.py app/tests/test_worker_claim_evidence_and_context.py app/tests/test_worker_contact_resolution.py app/tests/test_claims.py app/tests/test_graph_path_ranking_v2.py app/tests/test_news_match.py app/tests/test_score_routes.py` -> `51 passed`
+- [x] `cd apps/api && .venv/bin/python -m pytest -q app/tests/test_cases_routes.py app/tests/test_resolution_routes.py` -> `7 passed`
+- [x] `cd apps/api && .venv/bin/python -m pytest -q -m phase_smoke` -> `1 passed`
+- [x] `cd apps/ui && npm run build` -> pass
+
+### Manual Verification Notes (Pending)
+
+- [ ] Phase 1 manual E2E promote/resolve/contact-page workflow walkthrough
+- [ ] Phase 2 trust validation walkthrough (news explainability, sensitive/proposed draft behavior, citation inspection)
+- [ ] Phase 3 end-to-end intelligence scenario walkthrough (transcript ambiguity, contradiction resolution, news + opportunity-linked draft)

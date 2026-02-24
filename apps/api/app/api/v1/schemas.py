@@ -120,6 +120,9 @@ class NextStepSuggestion(BaseModel):
     type: str
     source: str
     confidence: float = 0.0
+    due_at: str | None = None
+    freshness_score: float | None = None
+    priority_score: float | None = None
     contact_id: str | None = None
     opportunity_id: str | None = None
     case_id: str | None = None
@@ -197,6 +200,7 @@ class InteractionSummaryRefreshResponse(BaseModel):
 class DraftRequest(BaseModel):
     contact_id: str
     objective: str | None = None
+    opportunity_id: str | None = None
     allow_sensitive: bool = False
     allow_uncertain_context: bool = False
     allow_proposed_changes_in_external_text: bool = False

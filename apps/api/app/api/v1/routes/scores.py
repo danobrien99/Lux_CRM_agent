@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from functools import lru_cache
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -45,12 +45,15 @@ from app.db.neo4j.queries import (
     get_latest_score_snapshots,
     list_case_opportunities_v2,
     list_open_opportunities_v2,
+    upsert_next_step_suggestion_v2,
 )
 from app.db.pg.models import Chunk, ContactCache, Interaction, ResolutionTask
 from app.services.prompts import render_prompt
 
 router = APIRouter(prefix="/scores", tags=["scores"])
 logger = logging.getLogger(__name__)
+
+_MAX_SCORE_REASON_COMPONENT_KEYS = 24
 
 
 def _summary_cache_key(contact_id: str) -> str:
@@ -220,6 +223,100 @@ def _datetime_text(value: datetime | None) -> str | None:
     return _as_utc(value).isoformat() if isinstance(value, datetime) else None
 
 
+def _compact_component_values(values: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(values, dict):
+        return {}
+    compact: dict[str, Any] = {}
+    for key in sorted(values.keys()):
+        if len(compact) >= _MAX_SCORE_REASON_COMPONENT_KEYS:
+            compact["_truncated"] = True
+            break
+        value = values.get(key)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            compact[key] = value
+            continue
+        if isinstance(value, list):
+            compact[key] = [item for item in value[:4] if isinstance(item, (str, int, float, bool))]
+            if len(value) > 4:
+                compact[f"{key}_count"] = len(value)
+            continue
+        if isinstance(value, dict):
+            nested_compact: dict[str, Any] = {}
+            for nested_key in sorted(value.keys())[:8]:
+                nested_value = value.get(nested_key)
+                if isinstance(nested_value, (str, int, float, bool)) or nested_value is None:
+                    nested_compact[nested_key] = nested_value
+            nested_compact["_keys"] = sorted(value.keys())[:12]
+            nested_compact["_total_keys"] = len(value)
+            compact[key] = nested_compact
+            continue
+        compact[key] = str(value)[:120]
+    return compact
+
+
+def _next_step_freshness_score(reference_ts: Any, *, now: datetime, half_life_days: float = 14.0) -> float | None:
+    dt = _parse_datetime_like(reference_ts)
+    if dt is None:
+        return None
+    age_days = max(0.0, (now - dt).total_seconds() / 86400.0)
+    score = 0.5 ** (age_days / max(0.1, half_life_days))
+    return round(max(0.0, min(1.0, score)), 4)
+
+
+def _due_at_from_next_step_type(step_type: str, *, now: datetime) -> str | None:
+    normalized = _normalize_text(step_type).lower()
+    if not normalized:
+        return None
+    if normalized in {"opportunity_follow_up", "active_thread_follow_up"}:
+        return (now + timedelta(days=3)).isoformat()
+    if normalized in {"topic_follow_up", "case_opportunity_review"}:
+        return (now + timedelta(days=5)).isoformat()
+    if normalized in {"reengage"}:
+        return (now + timedelta(days=7)).isoformat()
+    if normalized in {"initial_outreach"}:
+        return (now + timedelta(days=2)).isoformat()
+    return None
+
+
+def _persist_next_step_safely(next_step: NextStepSuggestion, *, priority_score: float | None = None) -> None:
+    try:
+        scope_type = "contact"
+        scope_id = next_step.contact_id or ""
+        if next_step.opportunity_id:
+            scope_type = "opportunity"
+            scope_id = next_step.opportunity_id
+        elif next_step.case_id:
+            scope_type = "case_opportunity"
+            scope_id = next_step.case_id
+        if not scope_id:
+            return
+        upsert_next_step_suggestion_v2(
+            scope_type=scope_type,
+            scope_id=scope_id,
+            summary=next_step.summary,
+            suggestion_type=next_step.type,
+            source=next_step.source,
+            confidence=float(next_step.confidence or 0.0),
+            contact_id=next_step.contact_id,
+            opportunity_id=next_step.opportunity_id,
+            case_id=next_step.case_id,
+            due_at=next_step.due_at,
+            freshness_score=next_step.freshness_score,
+            priority_score=priority_score if priority_score is not None else next_step.priority_score,
+            evidence_refs=next_step.evidence_refs,
+        )
+    except Exception:
+        logger.exception(
+            "next_step_persist_failed",
+            extra={
+                "contact_id": next_step.contact_id,
+                "opportunity_id": next_step.opportunity_id,
+                "case_id": next_step.case_id,
+                "source": next_step.source,
+            },
+        )
+
+
 def _heuristic_priority_next_step(
     *,
     contact_id: str,
@@ -233,6 +330,7 @@ def _heuristic_priority_next_step(
     contact_opportunities: list[dict[str, Any]],
     recent_interaction_ids: list[str],
 ) -> NextStepSuggestion:
+    now = datetime.now(timezone.utc)
     company = (company_name or "").strip()
     contact_label = company or "contact"
     topic = recent_topics[0] if recent_topics else None
@@ -240,6 +338,7 @@ def _heuristic_priority_next_step(
     if contact_opportunities:
         top = contact_opportunities[0]
         title = _normalize_text(str(top.get("title") or "open opportunity"), max_chars=120)
+        freshness_score = _next_step_freshness_score(top.get("last_engagement_at") or top.get("updated_at"), now=now)
         evidence_refs = [{"kind": "opportunity", "opportunity_id": top.get("opportunity_id")}]
         if top.get("last_engagement_at"):
             evidence_refs.append({"kind": "engagement_time", "last_engagement_at": top.get("last_engagement_at")})
@@ -250,6 +349,8 @@ def _heuristic_priority_next_step(
             type="opportunity_follow_up",
             source="opportunity",
             confidence=0.86,
+            due_at=_due_at_from_next_step_type("opportunity_follow_up", now=now),
+            freshness_score=freshness_score,
             contact_id=contact_id,
             opportunity_id=str(top.get("opportunity_id") or "") or None,
             evidence_refs=evidence_refs,
@@ -257,11 +358,14 @@ def _heuristic_priority_next_step(
     if contact_case_opportunities:
         top_case = contact_case_opportunities[0]
         title = _normalize_text(str(top_case.get("title") or "provisional opportunity"), max_chars=120)
+        freshness_score = _next_step_freshness_score(top_case.get("updated_at"), now=now)
         return NextStepSuggestion(
             summary=f"Review provisional opportunity \"{title}\" for {contact_label} and send a reply that clarifies scope, timeline, and next decision date.",
             type="case_opportunity_review",
             source="case_opportunity",
             confidence=0.72,
+            due_at=_due_at_from_next_step_type("case_opportunity_review", now=now),
+            freshness_score=freshness_score,
             contact_id=contact_id,
             case_id=str(top_case.get("case_id") or "") or None,
             evidence_refs=[
@@ -289,6 +393,8 @@ def _heuristic_priority_next_step(
             type="topic_follow_up",
             source="heuristic",
             confidence=0.62,
+            due_at=_due_at_from_next_step_type("topic_follow_up", now=now),
+            freshness_score=1.0 if recent_interaction_ids else None,
             contact_id=contact_id,
             evidence_refs=evidence_refs,
         )
@@ -298,6 +404,8 @@ def _heuristic_priority_next_step(
             type="active_thread_follow_up",
             source="heuristic",
             confidence=0.58,
+            due_at=_due_at_from_next_step_type("active_thread_follow_up", now=now),
+            freshness_score=1.0,
             contact_id=contact_id,
             evidence_refs=[{"kind": "interaction", "interaction_id": iid} for iid in recent_interaction_ids[:2]],
         )
@@ -307,6 +415,7 @@ def _heuristic_priority_next_step(
             type="reengage",
             source="heuristic",
             confidence=0.46,
+            due_at=_due_at_from_next_step_type("reengage", now=now),
             contact_id=contact_id,
             evidence_refs=[{"kind": "graph_metric", "metrics": graph_metrics}] if graph_metrics else [],
         )
@@ -315,6 +424,7 @@ def _heuristic_priority_next_step(
         type="initial_outreach",
         source="heuristic",
         confidence=0.35,
+        due_at=_due_at_from_next_step_type("initial_outreach", now=now),
         contact_id=contact_id,
         evidence_refs=[],
     )
@@ -516,9 +626,9 @@ def _build_score_reason(
         summary = f"{summary} Highlights: {', '.join(highlights)}."
 
     evidence_refs: list[dict[str, Any]] = [
-        {"component": "relationship", "values": relationship_components},
-        {"component": "priority", "values": priority_components},
-        {"component": "graph", "values": graph_components or {}},
+        {"component": "relationship", "values": _compact_component_values(relationship_components)},
+        {"component": "priority", "values": _compact_component_values(priority_components)},
+        {"component": "graph", "values": _compact_component_values(graph_components or {})},
         {"snapshot_asof": asof},
     ]
 
@@ -554,6 +664,19 @@ def _build_score_reason(
             }
         )
 
+    relationship_signal_count = _coerce_int(relationship_components.get("relationship_signal_count"), 0) or 0
+    relationship_signal_bonus = _coerce_float(relationship_components.get("relationship_signal_bonus"), 0.0)
+    if relationship_signal_count > 0 and relationship_signal_bonus > 0:
+        evidence_refs.append(
+            {
+                "kind": "relationship_signal_driver",
+                "relationship_signal_count": relationship_signal_count,
+                "relationship_signal_bonus": round(relationship_signal_bonus, 3),
+                "observed_at": asof,
+                "evidence_quality": "graph_context_aggregate",
+            }
+        )
+
     graph_payload = graph_components or {}
     graph_metrics = graph_payload.get("metrics") if isinstance(graph_payload.get("metrics"), dict) else {}
     if graph_metrics:
@@ -578,6 +701,8 @@ def _build_score_reason(
                 }
             )
 
+    if len(evidence_refs) > 10:
+        evidence_refs = evidence_refs[:10]
     return ScoreReason(summary=summary, evidence_refs=evidence_refs)
 
 
@@ -704,7 +829,11 @@ def _opportunity_next_step_from_ranked_item(
     contact_ids: list[str],
     thread_id: str | None,
     evidence_refs: list[dict[str, Any]],
+    reference_ts: Any | None = None,
+    priority_score: float | None = None,
 ) -> NextStepSuggestion:
+    now = datetime.now(timezone.utc)
+    freshness_score = _next_step_freshness_score(reference_ts, now=now)
     company = _normalize_text(company_name or "", max_chars=80) or "the account"
     if kind == "case_opportunity":
         return NextStepSuggestion(
@@ -712,6 +841,9 @@ def _opportunity_next_step_from_ranked_item(
             type="case_opportunity_review",
             source="case_opportunity",
             confidence=0.72,
+            due_at=_due_at_from_next_step_type("case_opportunity_review", now=now),
+            freshness_score=freshness_score,
+            priority_score=priority_score,
             contact_id=contact_ids[0] if contact_ids else None,
             case_id=case_id,
             opportunity_id=None,
@@ -726,6 +858,9 @@ def _opportunity_next_step_from_ranked_item(
         type="opportunity_follow_up",
         source="opportunity",
         confidence=0.84,
+        due_at=_due_at_from_next_step_type("opportunity_follow_up", now=now),
+        freshness_score=freshness_score,
+        priority_score=priority_score,
         contact_id=contact_ids[0] if contact_ids else None,
         opportunity_id=opportunity_id,
         case_id=None,
@@ -787,6 +922,8 @@ def _rank_opportunities(db: Session, *, limit: int = 50) -> list[RankedOpportuni
                     contact_ids=contact_ids,
                     thread_id=row.get("thread_id"),
                     evidence_refs=evidence_refs,
+                    reference_ts=row.get("last_engagement_at") or row.get("updated_at"),
+                    priority_score=priority_score,
                 ),
                 linked_contacts=[contact_profiles[cid] for cid in contact_ids if cid in contact_profiles][:5],
                 reason_chain=[
@@ -829,6 +966,8 @@ def _rank_opportunities(db: Session, *, limit: int = 50) -> list[RankedOpportuni
                     contact_ids=contact_ids,
                     thread_id=row.get("thread_id"),
                     evidence_refs=evidence_refs,
+                    reference_ts=row.get("updated_at"),
+                    priority_score=priority_score,
                 ),
                 linked_contacts=[contact_profiles[cid] for cid in contact_ids if cid in contact_profiles][:5],
                 reason_chain=[
@@ -851,7 +990,12 @@ def _rank_opportunities(db: Session, *, limit: int = 50) -> list[RankedOpportuni
             str(item.opportunity_id or item.case_id or item.title),
         )
     )
-    return ranked[: max(1, limit)]
+    top_ranked = ranked[: max(1, limit)]
+    for item in top_ranked[:25]:
+        if item.next_step is None:
+            continue
+        _persist_next_step_safely(item.next_step, priority_score=float(item.priority_score))
+    return top_ranked
 
 
 @router.get("/opportunities", response_model=RankedOpportunitiesResponse)
@@ -919,15 +1063,23 @@ def _build_interaction_summary(
     context_excerpts = [entry.get("excerpt", "") for entry in context_for_llm if entry.get("excerpt")]
     recent_interaction_ids = [interaction.interaction_id for interaction in contact_interactions[:3] if interaction.interaction_id]
     recent_topics = _extract_recent_topics_from_text(context_excerpts, limit=4)
-    graph_paths = get_contact_graph_paths(
-        contact_id,
-        objective=" ".join(context_excerpts[:2]) if context_excerpts else None,
-        max_hops=2,
-        limit=4,
-        include_uncertain=False,
-        lookback_days=365,
-    )
-    graph_metrics = get_contact_graph_metrics(contact_id)
+    try:
+        graph_paths = get_contact_graph_paths(
+            contact_id,
+            objective=" ".join(context_excerpts[:2]) if context_excerpts else None,
+            max_hops=2,
+            limit=4,
+            include_uncertain=False,
+            lookback_days=365,
+        )
+    except Exception:
+        logger.exception("interaction_summary_graph_paths_failed", extra={"contact_id": contact_id})
+        graph_paths = []
+    try:
+        graph_metrics = get_contact_graph_metrics(contact_id)
+    except Exception:
+        logger.exception("interaction_summary_graph_metrics_failed", extra={"contact_id": contact_id})
+        graph_metrics = {}
     graph_topic_hints: list[str] = []
     for path in graph_paths:
         path_text = path.get("path_text") if isinstance(path, dict) else None
@@ -945,11 +1097,19 @@ def _build_interaction_summary(
                 recent_topics.append(hint)
             if len(recent_topics) >= 4:
                 break
-    all_open_case_opps = list_case_opportunities_v2(status="open", limit=200)
+    try:
+        all_open_case_opps = list_case_opportunities_v2(status="open", limit=200)
+    except Exception:
+        logger.exception("interaction_summary_case_opportunities_failed", extra={"contact_id": contact_id})
+        all_open_case_opps = []
     contact_case_opportunities = [
         item for item in all_open_case_opps if contact_id in {cid for cid in (item.get("contact_ids") or []) if isinstance(cid, str)}
     ]
-    all_open_opps = list_open_opportunities_v2(limit=200)
+    try:
+        all_open_opps = list_open_opportunities_v2(limit=200)
+    except Exception:
+        logger.exception("interaction_summary_open_opportunities_failed", extra={"contact_id": contact_id})
+        all_open_opps = []
     contact_opportunities = [
         item for item in all_open_opps if contact_id in {cid for cid in (item.get("contact_ids") or []) if isinstance(cid, str)}
     ]
@@ -1036,6 +1196,9 @@ def _build_interaction_summary(
                             type=next_step.type if next_step else "llm_follow_up",
                             source="llm",
                             confidence=max(0.65, next_step.confidence if next_step else 0.65),
+                            due_at=next_step.due_at if next_step else _due_at_from_next_step_type("llm_follow_up", now=datetime.now(timezone.utc)),
+                            freshness_score=next_step.freshness_score if next_step else None,
+                            priority_score=next_step.priority_score if next_step else None,
                             contact_id=contact_id,
                             opportunity_id=next_step.opportunity_id if next_step else None,
                             case_id=next_step.case_id if next_step else None,
@@ -1094,6 +1257,8 @@ def refresh_cached_interaction_summary(
         company_name=resolved_company,
     )
     _write_cached_interaction_summary(contact_id, summary)
+    if summary.next_step is not None:
+        _persist_next_step_safely(summary.next_step)
     return summary
 
 
@@ -1298,14 +1463,30 @@ def contact_score_detail(contact_id: str, db: Session = Depends(get_db)) -> Cont
 def refresh_contact_interaction_summary(contact_id: str, db: Session = Depends(get_db)) -> InteractionSummaryRefreshResponse:
     contact = db.get(ContactCache, contact_id)
     company_name = _extract_company_name(contact_id)
-    summary = refresh_cached_interaction_summary(
-        db,
-        contact_id,
-        display_name=contact.display_name if contact else None,
-        company_name=company_name,
-    )
+    refreshed = True
+    try:
+        summary = refresh_cached_interaction_summary(
+            db,
+            contact_id,
+            display_name=contact.display_name if contact else None,
+            company_name=company_name,
+        )
+    except Exception:
+        logger.exception("interaction_summary_refresh_failed", extra={"contact_id": contact_id})
+        summary = get_cached_interaction_summary(contact_id)
+        if summary is None:
+            contact_interactions = _interactions_for_contact(db, contact_id)
+            summary = _build_interaction_summary(
+                db,
+                contact_interactions,
+                datetime.now(timezone.utc),
+                contact_id=contact_id,
+                display_name=contact.display_name if contact else None,
+                company_name=company_name,
+            )
+        refreshed = False
     return InteractionSummaryRefreshResponse(
         contact_id=contact_id,
-        refreshed=True,
+        refreshed=refreshed,
         interaction_summary=summary,
     )

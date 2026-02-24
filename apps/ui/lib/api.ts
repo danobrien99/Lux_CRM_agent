@@ -14,11 +14,38 @@ async function safeFetch(input: string, init?: RequestInit): Promise<Response> {
   }
 }
 
+async function readErrorMessage(res: Response): Promise<string | null> {
+  const contentType = res.headers.get("content-type") || "";
+  try {
+    if (contentType.includes("application/json")) {
+      const payload = (await res.json()) as unknown;
+      if (payload && typeof payload === "object") {
+        const detail = (payload as { detail?: unknown }).detail;
+        if (typeof detail === "string" && detail.trim()) {
+          return detail;
+        }
+        if (detail && typeof detail === "object") {
+          const message = (detail as { message?: unknown }).message;
+          if (typeof message === "string" && message.trim()) {
+            return message;
+          }
+        }
+      }
+      return null;
+    }
+    const text = (await res.text()).trim();
+    return text || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
   const url = `${getApiBase()}${path}`;
   const res = await safeFetch(url, { cache: "no-store" });
   if (!res.ok) {
-    throw new Error(`GET ${path} failed: ${res.status}`);
+    const detail = await readErrorMessage(res);
+    throw new Error(detail ? `GET ${path} failed: ${res.status} (${detail})` : `GET ${path} failed: ${res.status}`);
   }
   return res.json() as Promise<T>;
 }
@@ -31,7 +58,8 @@ export async function apiPost<T>(path: string, payload: unknown): Promise<T> {
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    throw new Error(`POST ${path} failed: ${res.status}`);
+    const detail = await readErrorMessage(res);
+    throw new Error(detail ? `POST ${path} failed: ${res.status} (${detail})` : `POST ${path} failed: ${res.status}`);
   }
   return res.json() as Promise<T>;
 }
@@ -42,7 +70,10 @@ export async function apiDelete<T>(path: string): Promise<T> {
     method: "DELETE",
   });
   if (!res.ok) {
-    throw new Error(`DELETE ${path} failed: ${res.status}`);
+    const detail = await readErrorMessage(res);
+    throw new Error(
+      detail ? `DELETE ${path} failed: ${res.status} (${detail})` : `DELETE ${path} failed: ${res.status}`,
+    );
   }
   return res.json() as Promise<T>;
 }

@@ -147,4 +147,34 @@ def detect_contradictions(existing_claims: list[dict], new_claims: list[dict]) -
                         "proposed_claim": claim,
                     },
                 )
+
+    existing_preferences = _accepted_existing(existing_claims, "preference")
+    for claim in new_claims:
+        if claim.get("claim_type") != "preference":
+            continue
+        value_json = _value_json(claim)
+        proposed_predicate = _norm_text(value_json.get("predicate") or value_json.get("field") or value_json.get("attribute"))
+        proposed_object = _norm_text(value_json.get("object") or value_json.get("label") or value_json.get("value"))
+        if not (proposed_predicate and proposed_object):
+            continue
+        for current in existing_preferences:
+            current_value_json = _value_json(current)
+            current_predicate = _norm_text(
+                current_value_json.get("predicate")
+                or current_value_json.get("field")
+                or current_value_json.get("attribute")
+            )
+            current_object = _norm_text(
+                current_value_json.get("object") or current_value_json.get("label") or current_value_json.get("value")
+            )
+            if current_predicate and current_predicate == proposed_predicate and current_object and current_object != proposed_object:
+                _append_unique(
+                    contradictions,
+                    seen,
+                    {
+                        "task_type": "preference_discrepancy",
+                        "current_claim": current,
+                        "proposed_claim": claim,
+                    },
+                )
     return contradictions

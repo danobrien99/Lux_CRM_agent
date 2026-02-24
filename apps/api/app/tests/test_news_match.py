@@ -110,3 +110,22 @@ def test_graph_candidates_use_v2_assertions_when_graph_v2_read_enabled(monkeypat
     assert candidates["c-1"]["evidence_refs"][0]["assertion_id"] == "a-1"
     assert "EnergyCo" in candidates["c-1"]["company_names"]
     assert any(ref.get("kind") == "company_association" for ref in candidates["c-1"]["evidence_refs"])
+
+
+def test_weighted_graph_signal_downweights_topic_spam_and_rewards_company_association() -> None:
+    graph_meta = {
+        "graph_hits": 12,
+        "evidence_refs": [
+            {"assertion_id": "a-topic-1", "claim_type": "topic"},
+            {"assertion_id": "a-topic-2", "claim_type": "topic"},
+            {"assertion_id": "a-topic-3", "claim_type": "topic"},
+            {"assertion_id": "a-topic-4", "claim_type": "topic"},
+            {"assertion_id": "a-opp-1", "claim_type": "opportunity"},
+            {"kind": "company_association", "company_name": "Acme"},
+        ],
+    }
+
+    weighted = news_match._weighted_graph_signal(graph_meta)
+
+    assert 0.0 < weighted < 1.0
+    assert weighted < 0.9  # topic-heavy evidence should not saturate graph score

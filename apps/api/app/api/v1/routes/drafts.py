@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -24,6 +25,7 @@ from app.services.drafting.tone import resolve_tone_band
 from app.services.prompts.style_learning import update_writing_style_guide_from_draft
 
 router = APIRouter(prefix="/drafts", tags=["drafts"])
+_NON_BLOCKING_INTERNAL_ASSERTION_CLAIM_TYPES = {"topic", "relationship_signal"}
 
 
 def _estimate_relationship_score(bundle: dict) -> float:
@@ -65,22 +67,36 @@ def _snippet(value: str, max_chars: int = 220) -> str:
     return f"{normalized[: max_chars - 3].rstrip()}..."
 
 
+def _contains_object_phrase(text: str, object_name: str) -> bool:
+    """Word-boundary phrase check to avoid substring false positives."""
+    normalized = " ".join(str(object_name or "").split()).strip()
+    if not normalized:
+        return False
+    tokens = [token for token in normalized.casefold().split() if token]
+    if not tokens:
+        return False
+    pattern = r"\b" + r"\s+".join(re.escape(token) for token in tokens) + r"\b"
+    return re.search(pattern, text.casefold()) is not None
+
+
 def _draft_policy_violations(bundle: dict[str, Any], draft_text: str) -> list[dict[str, Any]]:
     if not isinstance(draft_text, str) or not draft_text.strip():
         return []
-    text_lower = draft_text.casefold()
     violations: list[dict[str, Any]] = []
     seen_keys: set[tuple[str, str, str]] = set()
 
     for item in bundle.get("internal_assertion_evidence_trace", []) or []:
         if not isinstance(item, dict):
             continue
+        claim_type = str(item.get("claim_type") or "").strip().lower()
+        if claim_type in _NON_BLOCKING_INTERNAL_ASSERTION_CLAIM_TYPES:
+            # Low-signal contextual topics/relationship hints frequently overlap with names/generic words.
+            continue
         object_name = str(item.get("object_name") or "").strip()
         if len(object_name) < 3:
             continue
-        if object_name.casefold() not in text_lower:
+        if not _contains_object_phrase(draft_text, object_name):
             continue
-        claim_type = str(item.get("claim_type") or "").strip().lower()
         status = str(item.get("status") or "proposed").strip().lower()
         confidence = float(item.get("confidence") or 0.0)
         if claim_type in {"personal_detail", "family"}:
@@ -212,6 +228,7 @@ def create_draft(payload: DraftRequest, db: Session = Depends(get_db)) -> DraftR
         payload.contact_id,
         payload.objective,
         payload.allow_sensitive,
+        opportunity_id=payload.opportunity_id,
         allow_uncertain_context=payload.allow_uncertain_context,
         allow_proposed_changes_in_external_text=payload.allow_proposed_changes_in_external_text,
     )
@@ -243,6 +260,9 @@ def create_draft(payload: DraftRequest, db: Session = Depends(get_db)) -> DraftR
         "graph_claim_snippets": len(bundle.get("graph_claim_snippets", [])),
         "graph_paths": len(bundle.get("graph_paths", [])),
         "policy_flags": bundle.get("policy_flags") or {},
+        "opportunity_id": (bundle.get("opportunity_context") or {}).get("opportunity_id")
+        if isinstance(bundle.get("opportunity_context"), dict)
+        else None,
         "active_thread_id": (bundle.get("opportunity_thread") or {}).get("thread_id")
         if isinstance(bundle.get("opportunity_thread"), dict)
         else None,
@@ -251,6 +271,7 @@ def create_draft(payload: DraftRequest, db: Session = Depends(get_db)) -> DraftR
 
     prompt_json = {
         "objective": bundle.get("objective"),
+        "opportunity_id": payload.opportunity_id,
         "allow_sensitive": payload.allow_sensitive,
         "allow_uncertain_context": payload.allow_uncertain_context,
         "allow_proposed_changes_in_external_text": payload.allow_proposed_changes_in_external_text,
